@@ -22,7 +22,8 @@ defmodule IgniterCss.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:pythonx, "~> 0.4"}
+      {:pythonx, "~> 0.4"},
+      {:ex_doc, "~> 0.37", only: [:dev, :test], runtime: false}
     ]
   end
 end
