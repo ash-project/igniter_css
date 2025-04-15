@@ -14,7 +14,7 @@ IgniterCss is CSS patching functionality for [Igniter](https://hexdocs.pm/ignite
 IgniterCss can be added to an existing elixir project by adding it to your dependencies:
 
 ```elixir
-{:igniter_css, "~> 0.0.1", only: [:dev, :test]}
+{:igniter_css, "~> 0.1.0", only: [:dev, :test]}
 ```
 
 ## Status
