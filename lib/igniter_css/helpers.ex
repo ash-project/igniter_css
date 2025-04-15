@@ -24,7 +24,7 @@ defmodule IgniterCss.Helpers do
 
   @doc """
   Read and validate the file. It returns the file content if the file exists and the
-  extension is `.js` or `.ts`, otherwise, it returns an error tuple.
+  extension is `.js`, `.css`, or `.ts`, otherwise, it returns an error tuple.
 
   ```elixir
   read_and_validate_file("/path/to/file.js")
@@ -33,7 +33,7 @@ defmodule IgniterCss.Helpers do
   # sobelow_skip ["Traversal.FileModule"]
   def read_and_validate_file(file_path) do
     with true <- File.exists?(file_path),
-         true <- Path.extname(file_path) in [".js", ".ts"],
+         true <- Path.extname(file_path) in [".js", ".ts", ".css"],
          {:ok, file_content} <- File.read(file_path) do
       {:ok, file_content}
     else

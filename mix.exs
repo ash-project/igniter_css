@@ -27,7 +27,7 @@ defmodule IgniterCss.MixProject do
 
   defp package() do
     [
-      name: :igniter_js,
+      name: :igniter_css,
       files: ~w[
           lib
           plibs/css_tools/dist
@@ -81,7 +81,7 @@ defmodule IgniterCss.MixProject do
         "How To": ~r'documentation/how_to',
         Topics: ~r'documentation/topics',
         DSLs: ~r'documentation/dsls',
-        "About IgniterJs": [
+        "About IgniterCss": [
           "CHANGELOG.md"
         ]
       ]
