@@ -17,5 +17,5 @@ classifiers = [
 dependencies = ["tinycss2>=1.4.0"]
 
 [project.urls]
-"Homepage" = "https://github.com/ash-project/igniter_js"
-"Bug Tracker" = "https://github.com/ash-project/igniter_js/issues"
+"Homepage" = "https://github.com/ash-project/igniter_css"
+"Bug Tracker" = "https://github.com/ash-project/igniter_css/issues"
