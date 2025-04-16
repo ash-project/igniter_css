@@ -8,6 +8,7 @@ defmodule IgniterCss.Application do
   @impl true
   def start(_type, _args) do
     Application.ensure_all_started(:pythonx)
+    wheel_path = Application.app_dir(:igniter_css, "priv/python/css_tools-0.1.0-py3-none-any.whl")
 
     # Set configuration directly
     pyproject_toml = """
@@ -20,7 +21,7 @@ defmodule IgniterCss.Application do
       "css_tools==0.1.0"
     ]
     [tool.uv.sources]
-    css_tools = { path = "#{File.cwd!()}/plibs/css_tools/dist/css_tools-0.1.0-py3-none-any.whl" }
+    css_tools = { path = "#{wheel_path}" }
     """
 
     Pythonx.uv_init(pyproject_toml)

@@ -30,7 +30,7 @@ defmodule IgniterCss.MixProject do
       name: :igniter_css,
       files: ~w[
           lib
-          plibs/css_tools/dist
+          priv
           .formatter.exs
           mix.exs
           LICENSE
@@ -102,6 +102,7 @@ defmodule IgniterCss.MixProject do
   defp deps do
     [
       {:pythonx, "~> 0.4"},
+      {:igniter_js, "~> 0.4.6", optional: true},
       {:ex_doc, "~> 0.37", only: [:dev, :test], runtime: false},
       {:mix_audit, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:sobelow, ">= 0.0.0", only: [:dev, :test], runtime: false},
