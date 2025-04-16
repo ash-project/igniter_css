@@ -30,7 +30,7 @@ defmodule IgniterCss.MixProject do
       name: :igniter_css,
       files: ~w[
           lib
-          plibs
+          priv
           .formatter.exs
           mix.exs
           LICENSE
