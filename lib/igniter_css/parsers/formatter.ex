@@ -10,7 +10,7 @@ defmodule IgniterCss.Parsers.Formatter do
     defdelegate is_formatted(file_path_or_content, type \\ :content), to: Formatter
   else
     def format(_) do
-      {:error, :igniter__js_not_available}
+      {:error, :igniter_js_not_available}
     end
   end
 end
