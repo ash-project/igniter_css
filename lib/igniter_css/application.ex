@@ -8,7 +8,8 @@ defmodule IgniterCss.Application do
   @impl true
   def start(_type, _args) do
     Application.ensure_all_started(:pythonx)
-
+    app_dir = Application.app_dir(:igniter_css)
+    IO.inspect("#{app_dir}/plibs/css_tools/dist/css_tools-0.1.0-py3-none-any.whl")
     # Set configuration directly
     pyproject_toml = """
     [project]
@@ -20,7 +21,7 @@ defmodule IgniterCss.Application do
       "css_tools==0.1.0"
     ]
     [tool.uv.sources]
-    css_tools = { path = "#{File.cwd!()}/plibs/css_tools/dist/css_tools-0.1.0-py3-none-any.whl" }
+    css_tools = { path = "#{app_dir}/plibs/css_tools/dist/css_tools-0.1.0-py3-none-any.whl" }
     """
 
     Pythonx.uv_init(pyproject_toml)
