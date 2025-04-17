@@ -1,4 +1,4 @@
-# Changelog for IgniterCSS 0.1.0
+# Changelog for IgniterCss 0.1.0
 
 ### Features:
 
