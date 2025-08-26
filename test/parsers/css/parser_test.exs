@@ -2480,9 +2480,9 @@ defmodule IgniterCssTest.Parsers.Css.ParserTest do
         /* comment between properties */
         margin: 10px; /* standard inline comment */
       } /* comment after closing brace */
-      
+
       /* Comment between rules */
-      
+
       .class2 {
         padding: 5px; /* Another property */
       }
@@ -2501,13 +2501,13 @@ defmodule IgniterCssTest.Parsers.Css.ParserTest do
         scrollbar-width: none; /* Firefox */
         -webkit-overflow-scrolling: touch; /* iOS Safari */
       }
-      
+
       .hide-scrollbar::-webkit-scrollbar {
         display: none; /* Safari and Chrome */
         width: 0; /* Alternative method */
         height: 0; /* For horizontal scrollbar */
       }
-      
+
       @supports (-ms-overflow-style: none) {
         .hide-scrollbar {
           overflow: -moz-scrollbars-none; /* Old Firefox */
@@ -2530,7 +2530,7 @@ defmodule IgniterCssTest.Parsers.Css.ParserTest do
           margin: 0 auto; /* Center alignment */
         }
       }
-      
+
       @media screen and (min-width: 1024px) {
         /* Desktop styles */
         .container {
