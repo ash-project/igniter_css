@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "css_tools"
-version = "0.1.0"
+version = "0.1.2"
 authors = [{ name = "Shahryar Tavakkoli", email = "shahryar@mishka.tools" }]
 description = "CSS manipulation tools for Elixir integration"
 readme = "README.md"

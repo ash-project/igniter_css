@@ -26,3 +26,4 @@ igniter_css-*.tar
 
 .elixir_ls
 .ropeproject
+/plibs/css_tools/src/css_tools/__pycache__
