@@ -378,8 +378,7 @@ defmodule IgniterCssTest.Parsers.Css.ParserTest do
       assert ".sibling + .adjacent" in result["selectors"]
       assert "ul li:hover" in result["selectors"]
 
-      assert "input[type=\"text\"]" in result["selectors"] or
-               "input[type=\"text\"]" in result["selectors"]
+      assert "input[type=\"text\"]" in result["selectors"]
     end
 
     test "analyzes CSS for color usage" do
@@ -421,7 +420,7 @@ defmodule IgniterCssTest.Parsers.Css.ParserTest do
       assert is_map(result)
       assert result["selectors_count"] == 0
       assert result["properties_count"] == 0
-      assert length(result["selectors"]) == 0
+      assert Enum.empty?(result["selectors"])
     end
 
     test "analyzes CSS with comments" do
@@ -2452,16 +2451,16 @@ defmodule IgniterCssTest.Parsers.Css.ParserTest do
     test "validates CSS with multi-line comments" do
       # Given: CSS with multi-line comments
       css = """
-      /* 
+      /*
        * This is a multi-line comment
        * that spans several lines
        * and describes the following rules
        */
       .container {
         width: 100%; /* Full width */
-        max-width: 1200px; /* 
+        max-width: 1200px; /*
           Maximum width for larger screens
-          Prevents content from being too wide 
+          Prevents content from being too wide
         */
       }
       """
