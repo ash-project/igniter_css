@@ -14,7 +14,7 @@ defmodule IgniterCss.Application do
     pyproject_toml = """
     [project]
     name = "igniter_py"
-    version = "0.1.0"
+    version = "0.1.1"
     requires-python = "==3.13.*"
     dependencies = [
       "tinycss2==1.4.0",

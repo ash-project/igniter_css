@@ -1,3 +1,9 @@
+# Changelog for IgniterCss 0.1.1
+
+### Improvements:
+
+- fix(css): improve CSS comment validation and update css_tools to v0.1.2
+
 # Changelog for IgniterCss 0.1.0
 
 ### Features:
