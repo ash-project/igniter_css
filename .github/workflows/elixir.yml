@@ -28,6 +28,6 @@ jobs:
       erlang-version: ${{ matrix.erlang-version }}
       igniter-upgrade: false
       publish-docs: ${{ matrix.primary }}
-      release: ${{ matrix.primary }}
+      release: false
     secrets:
       HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
