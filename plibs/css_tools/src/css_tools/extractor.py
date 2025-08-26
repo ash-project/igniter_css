@@ -177,35 +177,30 @@ def validate_css(css: Union[str, bytes]) -> str:
         raise Exception("CSS syntax error: Unbalanced braces")
 
     # Parse the CSS to detect syntax errors
-    rules = tinycss2.parse_stylesheet(css)
+    rules = tinycss2.parse_stylesheet(css, skip_whitespace=False, skip_comments=False)
     check_parse_errors(rules)
 
     # Check each rule for proper declaration syntax
     for rule in rules:
         if rule.type == 'qualified-rule' and rule.content:
-            declarations = tinycss2.parse_declaration_list(rule.content)
-            check_parse_errors(declarations, "in declaration")
-
-            # Extra check for missing semicolons
-            serialized_rule = tinycss2.serialize(rule.content).strip()
-            # Look for patterns that suggest missing semicolons
-            lines = serialized_rule.split('\n')
-            for i, line in enumerate(lines):
-                line = line.strip()
-                if ':' in line and not line.endswith(';') and not line.endswith('{') and '}' not in line:
-                    # Check if this is not the last line or if there's another declaration after it
-                    if (i+1 < len(lines) and (':' in lines[i+1] or not lines[i+1].strip().startswith('}'))):
-                        raise Exception(f"CSS syntax error: Missing semicolon after '{line}'")
-
-    # Manual check for missing semicolons (line by line)
-    lines = css.split('\n')
-    for i, line in enumerate(lines):
-        line_stripped = line.strip()
-        # If it looks like a declaration (has a colon) but doesn't end with a semicolon
-        if ':' in line_stripped and not line_stripped.endswith(';') and not line_stripped.endswith('{') and '}' not in line_stripped:
-            # Check if next line exists and has content (not a closing brace or empty)
-            if i+1 < len(lines) and lines[i+1].strip() and not lines[i+1].strip().startswith('}'):
-                raise Exception(f"CSS syntax error: Missing semicolon at line {i+1} after '{line_stripped}'")
+            # Parse declarations, keeping comments to avoid issues
+            declarations = tinycss2.parse_declaration_list(rule.content, skip_whitespace=False, skip_comments=False)
+            
+            # Check for missing semicolons between properties
+            # Look for patterns like "property: value property:" which indicate missing semicolon
+            for i, decl in enumerate(declarations):
+                if hasattr(decl, 'type') and decl.type == 'declaration':
+                    # Check if the value contains what looks like another property
+                    value_str = tinycss2.serialize(decl.value).strip()
+                    # Look for patterns like "value property-name:" indicating missing semicolon
+                    if value_str and ':' in value_str:
+                        # But ignore if it's a valid CSS value with colons (like calc() or url())
+                        if not any(func in value_str.lower() for func in ['calc(', 'url(', 'var(', 'rgb(', 'rgba(', 'hsl(', 'hsla(']):
+                            # Check if there's a property-like pattern
+                            parts = value_str.split()
+                            for part in parts[1:]:  # Skip the first value part
+                                if part.endswith(':') or (len(parts) > parts.index(part) + 1 and parts[parts.index(part) + 1].startswith(':')):
+                                    raise Exception(f"CSS syntax error: Missing semicolon after '{decl.name}: {parts[0]}'")
 
     return css
 

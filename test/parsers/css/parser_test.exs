@@ -378,8 +378,7 @@ defmodule IgniterCssTest.Parsers.Css.ParserTest do
       assert ".sibling + .adjacent" in result["selectors"]
       assert "ul li:hover" in result["selectors"]
 
-      assert "input[type=\"text\"]" in result["selectors"] or
-               "input[type=\"text\"]" in result["selectors"]
+      assert "input[type=\"text\"]" in result["selectors"]
     end
 
     test "analyzes CSS for color usage" do
@@ -421,7 +420,7 @@ defmodule IgniterCssTest.Parsers.Css.ParserTest do
       assert is_map(result)
       assert result["selectors_count"] == 0
       assert result["properties_count"] == 0
-      assert length(result["selectors"]) == 0
+      assert Enum.empty?(result["selectors"])
     end
 
     test "analyzes CSS with comments" do
@@ -2425,6 +2424,134 @@ defmodule IgniterCssTest.Parsers.Css.ParserTest do
       /* Header styles */
       .header {
         color: blue; /* Main color */
+      }
+      """
+
+      # When: Validating CSS
+      {:ok, _, true} = Parser.validate_css(css)
+    end
+
+    test "validates CSS with inline comments after semicolons" do
+      # Given: CSS with various inline comment styles
+      css = """
+      .element {
+        color: red; /* Basic comment */
+        background: #fff; /* Hex color comment */
+        padding: 10px; /* Number with unit */
+        margin: 0; /* Zero value */
+        border: 1px solid #ccc; /* Multiple values */
+        font-family: "Arial", sans-serif; /* String value */
+      }
+      """
+
+      # When: Validating CSS
+      {:ok, _, true} = Parser.validate_css(css)
+    end
+
+    test "validates CSS with multi-line comments" do
+      # Given: CSS with multi-line comments
+      css = """
+      /*
+       * This is a multi-line comment
+       * that spans several lines
+       * and describes the following rules
+       */
+      .container {
+        width: 100%; /* Full width */
+        max-width: 1200px; /*
+          Maximum width for larger screens
+          Prevents content from being too wide
+        */
+      }
+      """
+
+      # When: Validating CSS
+      {:ok, _, true} = Parser.validate_css(css)
+    end
+
+    test "validates CSS with comments in various positions" do
+      # Given: CSS with comments in different positions
+      css = """
+      /* Comment at the beginning */
+      .class1 /* comment after selector */ {
+        /* comment before property */
+        color /* comment after property name */: /* comment before value */ blue /* comment after value */;
+        /* comment between properties */
+        margin: 10px; /* standard inline comment */
+      } /* comment after closing brace */
+
+      /* Comment between rules */
+
+      .class2 {
+        padding: 5px; /* Another property */
+      }
+      /* Comment at the end */
+      """
+
+      # When: Validating CSS
+      {:ok, _, true} = Parser.validate_css(css)
+    end
+
+    test "validates CSS with browser-specific comments" do
+      # Given: CSS with browser-specific inline comments
+      css = """
+      .hide-scrollbar {
+        -ms-overflow-style: none; /* Internet Explorer 10+ */
+        scrollbar-width: none; /* Firefox */
+        -webkit-overflow-scrolling: touch; /* iOS Safari */
+      }
+
+      .hide-scrollbar::-webkit-scrollbar {
+        display: none; /* Safari and Chrome */
+        width: 0; /* Alternative method */
+        height: 0; /* For horizontal scrollbar */
+      }
+
+      @supports (-ms-overflow-style: none) {
+        .hide-scrollbar {
+          overflow: -moz-scrollbars-none; /* Old Firefox */
+        }
+      }
+      """
+
+      # When: Validating CSS
+      {:ok, _, true} = Parser.validate_css(css)
+    end
+
+    test "validates CSS with nested comments in media queries" do
+      # Given: CSS with comments inside media queries
+      css = """
+      /* Mobile-first responsive design */
+      @media screen and (min-width: 768px) {
+        /* Tablet styles */
+        .container {
+          width: 750px; /* Fixed width for tablets */
+          margin: 0 auto; /* Center alignment */
+        }
+      }
+
+      @media screen and (min-width: 1024px) {
+        /* Desktop styles */
+        .container {
+          width: 970px; /* Fixed width for desktop */
+        }
+      }
+      """
+
+      # When: Validating CSS
+      {:ok, _, true} = Parser.validate_css(css)
+    end
+
+    test "validates CSS with special characters in comments" do
+      # Given: CSS with special characters in comments
+      css = """
+      .element {
+        content: "→"; /* Arrow symbol: → */
+        font-size: 16px; /* Size in px (pixels) */
+        width: calc(100% - 20px); /* 100% minus padding */
+        color: #ff0000; /* RGB: 255, 0, 0 */
+        opacity: 0.5; /* 50% transparency */
+        z-index: 999; /* Layer order: higher = on top */
       }
       """
 

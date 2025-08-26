@@ -1,6 +1,6 @@
 defmodule IgniterCss.MixProject do
   use Mix.Project
-  @version "0.1.0"
+  @version "0.1.1"
   @source_url "https://github.com/ash-project/igniter_css"
 
   @description """
@@ -104,12 +104,12 @@ defmodule IgniterCss.MixProject do
       {:pythonx, "~> 0.4"},
       {:rustler, ">= 0.0.0", optional: true},
       {:igniter_js, "~> 0.4.6", optional: true},
-      {:ex_doc, "~> 0.37", only: [:dev, :test], runtime: false},
       {:mix_audit, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:sobelow, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:dialyxir, ">= 0.0.0", only: [:dev, :test], runtime: false},
-      {:ex_check, "~> 0.12", only: [:dev, :test]},
-      {:credo, ">= 0.0.0", only: [:dev, :test], runtime: false}
+      {:ex_check, "~> 0.16", only: [:dev, :test]},
+      {:credo, ">= 0.0.0", only: [:dev, :test], runtime: false},
+      {:ex_doc, "~> 0.38", only: [:dev, :test], runtime: false}
     ]
   end
 
