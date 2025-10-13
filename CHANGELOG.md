@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2025 Shahryar Tavakkoli
+
+SPDX-License-Identifier: MIT
+-->
+
 # Changelog for IgniterCss 0.1.1
 
 ### Improvements:

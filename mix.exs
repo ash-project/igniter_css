@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Shahryar Tavakkoli
+#
+# SPDX-License-Identifier: MIT
+
 defmodule IgniterCss.MixProject do
   use Mix.Project
   @version "0.1.1"
@@ -27,7 +31,6 @@ defmodule IgniterCss.MixProject do
 
   defp package() do
     [
-      name: :igniter_css,
       files: ~w[
           lib
           priv
@@ -36,14 +39,18 @@ defmodule IgniterCss.MixProject do
           LICENSE
           README*
         ],
-      maintainers: ["Zach Daniel", "Shahryar Tavakkoli"],
+      maintainers: [
+        "Zach Daniel <zach@zachdaniel.dev",
+        "Shahryar Tavakkoli <shahryar.tbiz@gmail.com>"
+      ],
       licenses: ["MIT"],
       links: %{
         "GitHub" => @source_url,
+        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md",
         "Discord" => "https://discord.gg/HTHRaaVPUc",
         "Website" => "https://ash-hq.org",
         "Forum" => "https://elixirforum.com/c/ash-framework-forum/",
-        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md"
+        "REUSE Compliance" => "https://api.reuse.software/info/github.com/ash-project/igniter_css"
       }
     ]
   end

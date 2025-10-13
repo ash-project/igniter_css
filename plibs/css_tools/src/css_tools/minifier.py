@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Shahryar Tavakkoli
+#
+# SPDX-License-Identifier: MIT
+
 """CSS minification utilities using tinycss2."""
 
 import tinycss2

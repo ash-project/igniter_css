@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Shahryar Tavakkoli
+#
+# SPDX-License-Identifier: MIT
+
 from setuptools import setup, find_packages
 # Create a virtual environment in your project
 # python3 -m venv plibs/venv

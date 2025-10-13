@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Shahryar Tavakkoli
+#
+# SPDX-License-Identifier: MIT
+
 defmodule IgniterCss.Parsers.Parser do
   @moduledoc """
   CSS parsing and manipulation using Python's tinycss2 library.

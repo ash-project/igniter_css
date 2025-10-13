@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Shahryar Tavakkoli
+#
+# SPDX-License-Identifier: MIT
+
 defmodule IgniterCss.Parsers.Formatter do
   @moduledoc """
   Provides formatting functionality that requires igniter_js.
