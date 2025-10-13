@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Shahryar Tavakkoli
+#
+# SPDX-License-Identifier: MIT
+
 defmodule IgniterCss.CSS.CssProcessor do
   @moduledoc """
   A module that provides higher-level CSS processing functionality by leveraging

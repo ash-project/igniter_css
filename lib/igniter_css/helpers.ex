@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Shahryar Tavakkoli
+#
+# SPDX-License-Identifier: MIT
+
 defmodule IgniterCss.Helpers do
   @moduledoc """
   A module that contains helper functions for IgniterCss. For example it helps to normalize the

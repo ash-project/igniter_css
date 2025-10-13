@@ -1,4 +1,9 @@
 #!/bin/bash
+
+# SPDX-FileCopyrightText: 2025 Shahryar Tavakkoli
+#
+# SPDX-License-Identifier: MIT
+
 # Script to rebuild the Python wheel and ensure the latest version is used
 
 echo "🔧 Rebuilding CSS tools wheel..."
