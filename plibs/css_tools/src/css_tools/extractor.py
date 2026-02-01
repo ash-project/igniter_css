@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 igniter_css contributors <https://github.com/ash-project/igniter_css/graphs.contributors>
+# SPDX-FileCopyrightText: 2025 igniter_css contributors <https://github.com/ash-project/igniter_css/graphs/contributors>
 #
 # SPDX-License-Identifier: MIT
 
@@ -189,7 +189,7 @@ def validate_css(css: Union[str, bytes]) -> str:
         if rule.type == 'qualified-rule' and rule.content:
             # Parse declarations, keeping comments to avoid issues
             declarations = tinycss2.parse_declaration_list(rule.content, skip_whitespace=False, skip_comments=False)
-            
+
             # Check for missing semicolons between properties
             # Look for patterns like "property: value property:" which indicate missing semicolon
             for i, decl in enumerate(declarations):
