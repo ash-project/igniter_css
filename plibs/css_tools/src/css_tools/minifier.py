@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 igniter_css contributors <https://github.com/ash-project/igniter_css/graphs.contributors>
+# SPDX-FileCopyrightText: 2025 igniter_css contributors <https://github.com/ash-project/igniter_css/graphs/contributors>
 #
 # SPDX-License-Identifier: MIT
 
@@ -253,39 +253,39 @@ def remove_duplicates(css: Union[str, bytes]) -> str:
         elif rule.type == "at-rule" and rule.at_keyword.lower() == "media":
             # Handle media queries
             media_condition = tinycss2.serialize(rule.prelude).strip()
-            
+
             if media_condition in media_queries_map:
                 # Duplicate media query found
                 existing_media_rule = media_queries_map[media_condition]
-                
+
                 # Parse the content of both media queries
                 existing_content = parse_stylesheet(tinycss2.serialize(existing_media_rule.content))
                 new_content = parse_stylesheet(tinycss2.serialize(rule.content))
-                
+
                 # Create a map of selectors to their rules in existing content
                 existing_selectors = {}
                 for existing_rule in existing_content:
                     if existing_rule.type == "qualified-rule":
                         selector = get_selector_text(existing_rule)
                         existing_selectors[selector] = existing_rule
-                
+
                 # Merge the content rules
                 for content_rule in new_content:
                     if content_rule.type == "qualified-rule":
                         selector = get_selector_text(content_rule)
-                        
+
                         if selector in existing_selectors:
                             # Merge declarations with existing rule
                             existing_rule = existing_selectors[selector]
                             existing_decls = get_rule_declarations(existing_rule)
                             new_decls = get_rule_declarations(content_rule)
-                            
+
                             # Track existing properties
                             existing_props = {}
                             for j, decl in enumerate(existing_decls):
                                 if decl.type == "declaration":
                                     existing_props[decl.name] = j
-                            
+
                             # Add non-duplicate declarations
                             for decl in new_decls:
                                 if decl.type == "declaration":
@@ -298,7 +298,7 @@ def remove_duplicates(css: Union[str, bytes]) -> str:
                         else:
                             # Add new selector rule
                             existing_content.append(content_rule)
-                
+
                 # Update the existing media rule's content
                 existing_media_rule.content = existing_content
                 # Mark current rule as deleted
@@ -354,18 +354,18 @@ def remove_duplicates(css: Union[str, bytes]) -> str:
         elif rule.type == "at-rule" and rule.at_keyword.lower() == "media":
             # Format media query
             media_condition = tinycss2.serialize(rule.prelude).strip()
-            
+
             # Format the content
             content = ""
             for content_rule in rule.content:
                 if content_rule.type == "qualified-rule":
                     selector = get_selector_text(content_rule)
                     declarations = get_rule_declarations(content_rule)
-                    
+
                     # Remove duplicate properties
                     unique_props = {}
                     unique_decls = []
-                    
+
                     for decl in declarations:
                         if decl.type == "declaration":
                             # Newer declarations override older ones
@@ -373,31 +373,31 @@ def remove_duplicates(css: Union[str, bytes]) -> str:
                         else:
                             # Keep non-declaration nodes (like comments)
                             unique_decls.append(decl)
-                    
+
                     # Add unique declarations
                     for decl in unique_props.values():
                         unique_decls.append(decl)
-                    
+
                     # Sort declarations for consistency
                     declaration_nodes = [d for d in unique_decls if d.type == "declaration"]
                     sorted_decls = sorted(declaration_nodes, key=lambda d: d.name)
                     comment_nodes = [d for d in unique_decls if d.type == "comment"]
-                    
+
                     # Format declarations
                     rule_content = ""
                     for decl in sorted_decls:
                         value = tinycss2.serialize(decl.value).strip()
                         important = " !important" if decl.important else ""
                         rule_content += f"        {decl.name}: {value}{important};\n"
-                    
+
                     # Add comments at the end
                     for comment in comment_nodes:
                         rule_content += f"        /* {comment.value} */\n"
-                    
+
                     content += f"    {selector} {{\n{rule_content}    }}\n\n"
                 elif content_rule.type == "comment":
                     content += f"    /* {content_rule.value} */\n"
-            
+
             cleaned_css += f"@media {media_condition} {{\n{content}}}\n\n"
         else:
             # Keep other rules as they are
