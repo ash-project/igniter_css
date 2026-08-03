@@ -131,64 +131,42 @@ pub fn reindent(text: &str, indent: &str, nl: &str) -> String {
 }
 
 /// Split caller-supplied declaration text (`"color: red; margin: 0"`) into
-/// individual `"color: red;"` statements, respecting strings, comments and
-/// nested parentheses so a `;` inside `url(...)` or a comment does not split.
+/// individual `"color: red;"` statements.
+///
+/// Parsed with Biome rather than scanned: the text is wrapped in a throwaway
+/// rule and the declarations are read back off the CST. That is why a `;`
+/// inside `url(...)`, inside a string, or inside a comment does not split --
+/// not because of bracket counting, but because the parser knows what those
+/// are. Falls back to the raw text as a single declaration if it will not
+/// parse, so a caller always gets something rather than silent loss.
 pub fn split_declarations(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    let mut chars = text.chars().peekable();
-    let mut depth = 0usize;
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
 
-    while let Some(c) = chars.next() {
-        match c {
-            '"' | '\'' => {
-                current.push(c);
-                let quote = c;
-                let mut escaped = false;
-                for q in chars.by_ref() {
-                    current.push(q);
-                    if escaped {
-                        escaped = false;
-                    } else if q == '\\' {
-                        escaped = true;
-                    } else if q == quote {
-                        break;
-                    }
-                }
-            }
-            '/' if chars.peek() == Some(&'*') => {
-                current.push(c);
-                current.push(chars.next().unwrap());
-                let mut prev = '\0';
-                for q in chars.by_ref() {
-                    current.push(q);
-                    if prev == '*' && q == '/' {
-                        break;
-                    }
-                    prev = q;
-                }
-            }
-            '(' => {
-                depth += 1;
-                current.push(c);
-            }
-            ')' => {
-                depth = depth.saturating_sub(1);
-                current.push(c);
-            }
-            ';' if depth == 0 => {
-                if !current.trim().is_empty() {
-                    out.push(format!("{};", current.trim()));
-                }
-                current.clear();
-            }
-            _ => current.push(c),
-        }
+    let probe = format!("a{{{text}}}");
+    let ctx = ParseCtx::parse_default(&probe);
+    let Some(rule) = crate::locate::find_top_level_rules(&ctx).into_iter().next() else {
+        return vec![ensure_semicolon(text.trim())];
+    };
+
+    let declarations = crate::locate::declarations_in(&ctx, &rule);
+    if declarations.is_empty() {
+        return vec![ensure_semicolon(text.trim())];
     }
-    if !current.trim().is_empty() {
-        out.push(format!("{};", current.trim()));
+
+    declarations
+        .into_iter()
+        .map(|d| ensure_semicolon(ctx.source()[d.start..d.end].trim()))
+        .collect()
+}
+
+fn ensure_semicolon(text: &str) -> String {
+    if text.ends_with(';') {
+        text.to_string()
+    } else {
+        format!("{text};")
     }
-    out
 }
 
 /// Does this text already end in a `;` outside of strings and comments?

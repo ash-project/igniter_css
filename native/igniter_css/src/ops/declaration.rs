@@ -71,8 +71,9 @@ fn check_property_and_value(property: &str, value: &str) -> Result<(String, Stri
         )));
     }
     // A `;` outside of a string, comment or `url(...)` would silently turn one
-    // declaration into two.
-    if crate::ops::split_declarations(value).len() > 1 {
+    // declaration into two. Probed as a complete declaration, so the parser --
+    // not a bracket counter -- decides whether the value terminates early.
+    if crate::ops::split_declarations(&format!("{property}: {value}")).len() > 1 {
         return Err(CssError::InvalidInput(format!(
             "value {value:?} contains a `;`; pass one declaration at a time"
         )));
@@ -130,10 +131,12 @@ pub fn set_declaration(
                         format!("{value} !important"),
                     )])
                 } else {
-                    let (_, imp_end) = d
-                        .important_range
-                        .expect("important flag present when d.important");
-                    Ok(vec![Edit::replace(d.value_start, imp_end, value)])
+                    // Clearing the flag: replace through the end of the
+                    // `!important` range. If the range is somehow absent the
+                    // value range is still correct, so there is no case where a
+                    // panic would be better than an edit.
+                    let end = d.important_range.map_or(d.value_end, |(_, e)| e);
+                    Ok(vec![Edit::replace(d.value_start, end, value)])
                 }
             }
             None => {

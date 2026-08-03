@@ -34,45 +34,6 @@ pub struct AtRuleSpec {
     pub text: String,
 }
 
-/// Collapse whitespace runs outside of strings.
-fn collapse_ws(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    let mut pending = false;
-    while let Some(c) = chars.next() {
-        match c {
-            '"' | '\'' => {
-                if pending && !out.is_empty() {
-                    out.push(' ');
-                }
-                pending = false;
-                out.push(c);
-                let quote = c;
-                let mut escaped = false;
-                for q in chars.by_ref() {
-                    out.push(q);
-                    if escaped {
-                        escaped = false;
-                    } else if q == '\\' {
-                        escaped = true;
-                    } else if q == quote {
-                        break;
-                    }
-                }
-            }
-            c if c.is_whitespace() => pending = true,
-            _ => {
-                if pending && !out.is_empty() {
-                    out.push(' ');
-                }
-                pending = false;
-                out.push(c);
-            }
-        }
-    }
-    out.trim().to_string()
-}
-
 /// Normalise a caller-supplied needle (e.g. the `matching` argument of
 /// [`remove_at_rule`]) into the same shape as an AST-derived target.
 ///
@@ -125,7 +86,7 @@ pub fn parse_at_rule_spec(line: &str) -> Result<AtRuleSpec> {
         ));
     }
 
-    let prelude = collapse_ws(&rule.prelude);
+    let prelude = rule.prelude_norm.clone();
     Ok(AtRuleSpec {
         name: rule.name.clone(),
         // Read from the parsed line's own CST, not scanned out of the text.
@@ -150,7 +111,7 @@ fn is_equivalent(spec: &AtRuleSpec, existing: &AtRuleRef) -> bool {
         (Some(a), Some(b)) => a == b,
         // Neither has one (`@layer base, components;`): fall back to the
         // whitespace-normalised prelude.
-        (None, None) => collapse_ws(&existing.prelude) == spec.prelude,
+        (None, None) => existing.prelude_norm == spec.prelude,
         // One names a subject and the other does not: different rules.
         _ => false,
     }
@@ -248,7 +209,7 @@ pub fn remove_at_rule(
                 let hit = match &at.target {
                     Some(target) => target == w,
                     // No subject to match on (`@layer base;`): compare preludes.
-                    None => collapse_ws(&at.prelude) == *w,
+                    None => at.prelude_norm == *w,
                 };
                 if !hit {
                     continue;

@@ -74,7 +74,15 @@ pub fn append_to_body(ctx: &ParseCtx, rule: &RuleRef, text: &str) -> Vec<Edit> {
     }
 
     let comments = comment_ranges(ctx);
-    let last = items.last().expect("non-empty");
+    // `items` is non-empty here, but expressing that with `?` rather than a
+    // panic keeps this path total -- nothing reachable from a NIF may unwind.
+    let Some(last) = items.last() else {
+        return vec![Edit::replace(
+            rule.body_open,
+            rule.body_close,
+            text.to_string(),
+        )];
+    };
     let last_start = usize::from(last.text_trimmed_range().start());
     let last_end = usize::from(last.text_trimmed_range().end());
 

@@ -56,6 +56,11 @@ pub struct AtRuleRef {
     pub name: String,
     /// Everything between the name and the `;` or `{`, trimmed.
     pub prelude: String,
+    /// The prelude rendered token by token with single-space separation, for
+    /// comparisons. Built from the CST rather than by collapsing whitespace in
+    /// the raw text, so a comment or an odd line break inside the prelude
+    /// cannot change the answer.
+    pub prelude_norm: String,
     /// The at-rule's subject, read from the CST: the first string literal or
     /// `url()` value appearing before any block, unquoted.
     ///
@@ -194,85 +199,92 @@ fn is_declaration_item(kind: CssSyntaxKind) -> bool {
 // Selector normalisation
 // ---------------------------------------------------------------------------
 
-/// Canonical form of a selector for comparison purposes.
+/// Render a selector subtree in canonical form.
 ///
-/// Collapses whitespace runs, puts exactly one space around the `>`, `+`, `~`
-/// combinators, and exactly one space after each `,`. Text inside quotes is
-/// copied verbatim; text inside `[...]` keeps its own spacing rules so that
-/// `[a~="b"]` is not mangled into something unrecognisable.
-///
-/// This does not need to be semantically perfect -- it needs to be
-/// *deterministic*, so that the same selector written two ways lands on the
-/// same string and two different selectors do not collide.
-pub fn normalize_selector(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    let mut bracket_depth = 0usize;
-    let mut paren_depth = 0usize;
-    let mut pending_space = false;
-
-    while let Some(c) = chars.next() {
-        match c {
-            '"' | '\'' => {
-                if pending_space && !out.is_empty() {
-                    out.push(' ');
+/// Structural, not textual: the CST already models combinators as tokens
+/// (`>` `+` `~`, and a `CSS_SPACE_LITERAL` for descendant) and selector lists
+/// as element children, so canonical spacing falls out of walking the tree.
+/// Everything below a combinator is concatenated token by token, which is
+/// correct because whitespace is not legal inside a compound selector -- and it
+/// means quoted attribute values and `:not(...)` arguments are copied verbatim
+/// without any quote or bracket tracking.
+fn render_selector(node: &CssSyntaxNode, out: &mut String) {
+    match node.kind() {
+        // `.a, .b` -- join the elements, drop the source's own commas.
+        CssSyntaxKind::CSS_SELECTOR_LIST
+        | CssSyntaxKind::CSS_COMPOUND_SELECTOR_LIST
+        | CssSyntaxKind::CSS_ANY_SELECTOR_LIST
+        | CssSyntaxKind::CSS_RELATIVE_SELECTOR_LIST => {
+            for (i, child) in node.children().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
                 }
-                pending_space = false;
-                let quote = c;
-                out.push(quote);
-                let mut escaped = false;
-                for q in chars.by_ref() {
-                    out.push(q);
-                    if escaped {
-                        escaped = false;
-                    } else if q == '\\' {
-                        escaped = true;
-                    } else if q == quote {
-                        break;
+                render_selector(&child, out);
+            }
+        }
+        // `left <combinator> right`, always exactly one space either side.
+        CssSyntaxKind::CSS_COMPLEX_SELECTOR => {
+            for element in node.children_with_tokens() {
+                match element {
+                    biome_rowan::SyntaxElement::Node(child) => render_selector(&child, out),
+                    biome_rowan::SyntaxElement::Token(token) => {
+                        // The descendant combinator is a space literal; every
+                        // other combinator carries its own glyph.
+                        if token.kind() == CssSyntaxKind::CSS_SPACE_LITERAL {
+                            out.push(' ');
+                        } else {
+                            out.push(' ');
+                            out.push_str(token.text_trimmed());
+                            out.push(' ');
+                        }
                     }
                 }
             }
-            c if c.is_whitespace() => {
-                pending_space = true;
-            }
-            '>' | '+' | '~' if bracket_depth == 0 && paren_depth == 0 => {
-                // Combinator: exactly one space on each side.
-                while out.ends_with(' ') {
-                    out.pop();
+        }
+        _ => {
+            for element in node.children_with_tokens() {
+                match element {
+                    biome_rowan::SyntaxElement::Node(child) => render_selector(&child, out),
+                    biome_rowan::SyntaxElement::Token(token) => out.push_str(token.text_trimmed()),
                 }
-                if !out.is_empty() {
-                    out.push(' ');
-                }
-                out.push(c);
-                out.push(' ');
-                pending_space = false;
-            }
-            ',' => {
-                while out.ends_with(' ') {
-                    out.pop();
-                }
-                out.push(',');
-                out.push(' ');
-                pending_space = false;
-            }
-            _ => {
-                if pending_space && !out.is_empty() && !out.ends_with(' ') {
-                    out.push(' ');
-                }
-                pending_space = false;
-                match c {
-                    '[' => bracket_depth += 1,
-                    ']' => bracket_depth = bracket_depth.saturating_sub(1),
-                    '(' => paren_depth += 1,
-                    ')' => paren_depth = paren_depth.saturating_sub(1),
-                    _ => {}
-                }
-                out.push(c);
             }
         }
     }
+}
 
+/// Canonical form of a selector node, for comparison purposes.
+pub fn normalize_selector_node(node: &CssSyntaxNode) -> String {
+    let mut out = String::new();
+    render_selector(node, &mut out);
+    // No post-processing: collapsing whitespace here would reach inside string
+    // literals such as `a[href^="a  b"]`. The walk emits exactly one space per
+    // combinator, so there is nothing to collapse.
     out.trim().to_string()
+}
+
+/// Canonical form of a caller-supplied selector string.
+///
+/// Parsed with Biome and rendered through [`normalize_selector_node`], so a
+/// selector written by hand in Elixir and one read out of a stylesheet go
+/// through exactly the same code path and cannot disagree.
+pub fn normalize_selector(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let probe = format!("{trimmed} {{}}");
+    let parse = biome_css_parser::parse_css(&probe, biome_css_parser::CssParserOptions::default());
+    let selector_list = parse
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == CssSyntaxKind::CSS_SELECTOR_LIST);
+
+    match selector_list {
+        Some(list) if !list.text_trimmed().to_string().is_empty() => normalize_selector_node(&list),
+        // Unparseable as a selector: fall back to whitespace collapsing so the
+        // caller still gets a deterministic key rather than an empty one.
+        _ => trimmed.split_whitespace().collect::<Vec<_>>().join(" "),
+    }
 }
 
 /// Canonical form of a property name: lowercased, trimmed. Custom properties
@@ -303,7 +315,7 @@ fn rule_ref_from(node: &CssSyntaxNode, ctx: &ParseCtx) -> Option<RuleRef> {
     let selector_raw = ctx.text(selector_list.text_trimmed_range()).to_string();
 
     Some(RuleRef {
-        selector_norm: normalize_selector(&selector_raw),
+        selector_norm: normalize_selector_node(&selector_list),
         selector_raw,
         node: node.clone(),
         start,
@@ -387,7 +399,21 @@ fn at_rule_ref_from(node: &CssSyntaxNode, ctx: &ParseCtx) -> Option<AtRuleRef> {
         .trim()
         .to_string();
 
+    // Canonical prelude: the tokens between the name and the `;`/`{`, joined by
+    // single spaces. Trivia (whitespace and comments) is excluded by
+    // construction because we read `text_trimmed` of each token.
+    let prelude_norm = inner
+        .descendants_tokens(Direction::Next)
+        .filter(|t| {
+            let s = usize::from(t.text_trimmed_range().start());
+            s >= name_end && s < prelude_end
+        })
+        .map(|t| t.text_trimmed().to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+
     Some(AtRuleRef {
+        prelude_norm,
         target: at_rule_target_token(node),
         node: node.clone(),
         name,
@@ -769,10 +795,14 @@ mod tests {
     }
 
     #[test]
-    fn does_not_treat_plus_inside_parens_as_a_combinator() {
+    fn a_plus_inside_a_functional_pseudo_is_not_a_combinator() {
+        // Both spellings denote the same selector, and reading the CST rather
+        // than the text makes them agree -- the old text scanner kept them
+        // distinct, which meant `:nth-child(2n + 1)` could not be matched by
+        // `:nth-child(2n+1)`.
         assert_eq!(
             normalize_selector("li:nth-child(2n + 1)"),
-            "li:nth-child(2n + 1)"
+            "li:nth-child(2n+1)"
         );
         assert_eq!(
             normalize_selector("li:nth-child(2n+1)"),

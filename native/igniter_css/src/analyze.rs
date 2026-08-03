@@ -14,6 +14,7 @@ use crate::locate::{
 };
 use crate::ops::query;
 use biome_css_syntax::{CssSyntaxKind, CssSyntaxNode};
+use biome_rowan::Direction;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A block of declarations together with the text that introduced it -- a
@@ -95,6 +96,8 @@ pub fn blocks(ctx: &ParseCtx) -> Vec<Block> {
 // Colours
 // ---------------------------------------------------------------------------
 
+/// Functions that produce a colour. Names, because the CST models them all as
+/// `CSS_FUNCTION` -- the spec list is data, not a parsing shortcut.
 const COLOR_FUNCTIONS: &[&str] = &[
     "rgb",
     "rgba",
@@ -110,6 +113,10 @@ const COLOR_FUNCTIONS: &[&str] = &[
     "light-dark",
 ];
 
+/// CSS named colours. Matched against `CSS_IDENTIFIER` tokens only, never
+/// against arbitrary text, so a path like `url(/red.png)` cannot be mistaken
+/// for one -- Biome parses that as `CSS_URL_FUNCTION` with a raw value, which
+/// is structurally not an identifier.
 const NAMED_COLORS: &[&str] = &[
     "aliceblue",
     "antiquewhite",
@@ -131,6 +138,7 @@ const NAMED_COLORS: &[&str] = &[
     "cornflowerblue",
     "cornsilk",
     "crimson",
+    "currentcolor",
     "cyan",
     "darkblue",
     "darkcyan",
@@ -262,72 +270,51 @@ const NAMED_COLORS: &[&str] = &[
     "yellowgreen",
 ];
 
-fn is_hex_color(token: &str) -> bool {
-    let Some(rest) = token.strip_prefix('#') else {
-        return false;
-    };
-    matches!(rest.len(), 3 | 4 | 6 | 8) && rest.chars().all(|c| c.is_ascii_hexdigit())
+/// A `CSS_COLOR_LITERAL` carries the digits without the `#`. Biome parses
+/// `#notahex` as a colour node too, so the literal still has to be checked
+/// against the spec's permitted lengths.
+fn is_hex_literal(text: &str) -> bool {
+    matches!(text.len(), 3 | 4 | 6 | 8) && text.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// Blank out `url(...)` payloads and quoted strings so a path like
-/// `url(/red.png)` is not read as the colour `red`.
-fn strip_opaque_runs(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    let mut chars = value.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' | '\'' => {
-                let quote = c;
-                let mut escaped = false;
-                for q in chars.by_ref() {
-                    if escaped {
-                        escaped = false;
-                    } else if q == '\\' {
-                        escaped = true;
-                    } else if q == quote {
-                        break;
-                    }
-                }
-                out.push(' ');
-            }
-            _ => {
-                out.push(c);
-                if out.to_lowercase().ends_with("url(") {
-                    let mut depth = 1usize;
-                    for q in chars.by_ref() {
-                        match q {
-                            '(' => depth += 1,
-                            ')' => {
-                                depth -= 1;
-                                if depth == 0 {
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    out.push(')');
-                }
-            }
-        }
-    }
-    out
+/// Does this declaration's value contain a colour?
+///
+/// Decided from the CST, not from the text. Biome already distinguishes the
+/// three cases: a hex colour is a `CSS_COLOR` node, `rgb(...)` and friends are
+/// `CSS_FUNCTION` nodes carrying an identifier name, and a bare `red` is a
+/// `CSS_IDENTIFIER`. A `url(...)` payload is a `CSS_URL_FUNCTION` with a raw
+/// value node, so its contents are never identifiers and cannot be misread.
+pub fn value_node_has_color(value: &CssSyntaxNode) -> bool {
+    value.descendants().any(|node| match node.kind() {
+        // `#fff`, `#ffffffcc` -- shape from the CST, digits from the spec.
+        CssSyntaxKind::CSS_COLOR => node.descendants_tokens(Direction::Next).any(|t| {
+            t.kind() == CssSyntaxKind::CSS_COLOR_LITERAL && is_hex_literal(t.text_trimmed())
+        }),
+        // `rgb(...)`, `oklch(...)`, `color-mix(...)`
+        CssSyntaxKind::CSS_FUNCTION => node
+            .first_token()
+            .is_some_and(|t| COLOR_FUNCTIONS.contains(&t.text_trimmed().to_lowercase().as_str())),
+        // `red`, `transparent`, `currentColor`
+        CssSyntaxKind::CSS_IDENTIFIER => node
+            .first_token()
+            .is_some_and(|t| NAMED_COLORS.contains(&t.text_trimmed().to_lowercase().as_str())),
+        _ => false,
+    })
 }
 
-/// Does this value contain a colour?
+/// String-level convenience for callers that only have the value text. Parses
+/// it so the answer comes from the same CST walk as everything else.
 pub fn value_has_color(value: &str) -> bool {
-    let lower = strip_opaque_runs(value).to_lowercase();
-    if lower.contains("currentcolor") {
-        return true;
+    if value.trim().is_empty() {
+        return false;
     }
-    for func in COLOR_FUNCTIONS {
-        if lower.contains(&format!("{func}(")) {
-            return true;
-        }
-    }
-    lower
-        .split(|c: char| !(c.is_alphanumeric() || c == '#' || c == '-'))
-        .any(|token| is_hex_color(token) || (!token.is_empty() && NAMED_COLORS.contains(&token)))
+    let probe = format!("a{{b:{value}}}");
+    let parse = biome_css_parser::parse_css(&probe, biome_css_parser::CssParserOptions::default());
+    parse
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == CssSyntaxKind::CSS_GENERIC_COMPONENT_VALUE_LIST)
+        .is_some_and(|list| value_node_has_color(&list))
 }
 
 /// Colour-carrying declarations, grouped by the selector they belong to.
