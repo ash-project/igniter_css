@@ -84,6 +84,21 @@ fn ops() -> Vec<Op> {
             )
             .ok()
         }),
+        // `.page { display: flex; /* trailing on a declaration */ }` in the
+        // comments fixture: this is the only op that takes the *update* branch
+        // on a declaration that already carries a trailing comment, so without
+        // it the sweep never exercises rule E against a real comment.
+        ("set_declaration_over_a_commented_line", |s| {
+            set_declaration(
+                s,
+                ".page",
+                "display",
+                "block",
+                SetOptions::default(),
+                opts(),
+            )
+            .ok()
+        }),
         ("remove_declaration", |s| {
             remove_declaration(s, ".page", "display", opts()).ok()
         }),

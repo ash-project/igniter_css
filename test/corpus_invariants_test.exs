@@ -31,6 +31,11 @@ defmodule IgniterCss.CorpusInvariantsTest do
        false},
       {"set_declaration/existing",
        &IgniterCss.set_declaration(&1, ".page", "color", "rebeccapurple"), false},
+      # `.page { display: flex; /* trailing on a declaration */ }` in the
+      # comments fixture: the only op here that takes the *update* branch over a
+      # declaration that already carries a trailing comment.
+      {"set_declaration/over-a-commented-line",
+       &IgniterCss.set_declaration(&1, ".page", "display", "block"), false},
       {"remove_declaration", &IgniterCss.remove_declaration(&1, ".page", "display"), true},
       {"append_raw_to_rule", &IgniterCss.append_raw_to_rule(&1, ".page", "outline: 1px solid;"),
        false},
