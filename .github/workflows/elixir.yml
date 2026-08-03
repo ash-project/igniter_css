@@ -24,6 +24,11 @@ jobs:
             erlang-version: "default"
             primary: true
     uses: ash-project/ash/.github/workflows/ash-ci.yml@main
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+      security-events: write
     with:
       spark-formatter: false
       spark-cheat-sheets: false
