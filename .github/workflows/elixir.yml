@@ -33,8 +33,6 @@ jobs:
       igniter-upgrade: false
       rustler-precompiled-module: IgniterCss.Native
       rust-crate-dir: native/igniter_css
-      rust-project-name: igniter_css
-      rust-project-dir: native/igniter_css
       publish-docs: ${{ matrix.primary }}
       reuse: true
     secrets:
