@@ -31,6 +31,7 @@ jobs:
       elixir-version: ${{ matrix.elixir-version }}
       erlang-version: ${{ matrix.erlang-version }}
       igniter-upgrade: false
+      rustler-precompiled-module: IgniterCss.Native
       publish-docs: ${{ matrix.primary }}
       release: false
       reuse: true

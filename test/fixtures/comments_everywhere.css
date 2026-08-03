@@ -1,0 +1,45 @@
+/* ============================================================
+   Section: Layout
+   ============================================================ */
+
+/* The page shell. */
+.page {
+  /* leading comment inside the body */
+  display: flex; /* trailing on a declaration */
+  /* between declarations */
+  flex-direction: column;
+  min-height: 100vh;
+  /* dangling comment at the end of the body */
+}
+
+/* A selector list with comments between the selectors. */
+.a, /* first */
+.b, /* second */
+.c {
+  color: red;
+}
+
+@media (min-width: 768px) {
+  /* comment inside a media block */
+  .page {
+    flex-direction: row; /* side by side on desktop */
+  }
+  /* trailing comment inside the media block */
+}
+
+/* ============================================================
+   Section: Utilities
+   ============================================================ */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+}
+
+/* A comment separated from the rule below by a blank line. */
+
+.hide-scrollbar {
+  scrollbar-width: none; /* Firefox */
+}
+
+/* Trailing comment at end of file, no newline after it */

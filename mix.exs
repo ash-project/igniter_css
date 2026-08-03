@@ -4,11 +4,11 @@
 
 defmodule IgniterCss.MixProject do
   use Mix.Project
-  @version "0.1.1"
+  @version "0.2.0"
   @source_url "https://github.com/ash-project/igniter_css"
 
   @description """
-  CSS codemods, powered by a Python parser integrated via NIFs
+  CSS codemods, powered by a high-performance Rust parser integrated via NIFs
   """
 
   def project do
@@ -33,10 +33,14 @@ defmodule IgniterCss.MixProject do
     [
       files: ~w[
           lib
-          priv
+          native/igniter_css/src
+          native/igniter_css/Cargo.*
+          native/igniter_css/README.md
+          native/igniter_css/.cargo
+          checksum-*.exs
           .formatter.exs
           mix.exs
-          LICENSE
+          LICENSES
           README*
         ],
       maintainers: [
@@ -108,9 +112,9 @@ defmodule IgniterCss.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:pythonx, "~> 0.4"},
-      {:rustler, ">= 0.0.0", optional: true},
-      {:igniter_js, "~> 0.4.6", optional: true},
+      {:rustler, "~> 0.38.0", optional: true},
+      {:rustler_precompiled, "~> 0.9"},
+      {:igniter, "~> 0.5", optional: true},
       {:mix_audit, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:sobelow, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:dialyxir, ">= 0.0.0", only: [:dev, :test], runtime: false},

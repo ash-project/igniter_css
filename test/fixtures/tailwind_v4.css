@@ -1,0 +1,58 @@
+@import "tailwindcss";
+@import "./typography.css" layer(components);
+
+@theme {
+  --font-display: "Satoshi", "sans-serif";
+  --breakpoint-3xl: 1920px;
+  --color-avocado-100: oklch(0.99 0 0);
+  --color-avocado-200: oklch(0.98 0.04 113.22);
+  --ease-fluid: cubic-bezier(0.3, 0, 0, 1);
+}
+
+@theme inline {
+  --color-brand: var(--brand);
+}
+
+@custom-variant pointer-coarse (@media (pointer: coarse));
+@custom-variant theme-midnight (&:where([data-theme="midnight"] *));
+
+@utility tab-4 {
+  tab-size: 4;
+}
+
+@utility scrollbar-hidden {
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@layer base {
+  /* Sensible defaults for headings. */
+  h1 {
+    font-size: var(--text-2xl);
+  }
+
+  h2 {
+    font-size: var(--text-xl);
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply rounded-full bg-violet-500 px-5 py-2 font-semibold text-white;
+  }
+}
+
+@variant dark {
+  .card {
+    background-color: var(--color-gray-900);
+  }
+}
+
+@reference "../../app.css";
+
+.typography {
+  h1 {
+    @apply text-2xl;
+  }
+}
