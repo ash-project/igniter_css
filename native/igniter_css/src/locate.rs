@@ -56,6 +56,12 @@ pub struct AtRuleRef {
     pub name: String,
     /// Everything between the name and the `;` or `{`, trimmed.
     pub prelude: String,
+    /// The at-rule's subject, read from the CST: the first string literal or
+    /// `url()` value appearing before any block, unquoted.
+    ///
+    /// Token-derived rather than scanned out of `prelude`, so a quote inside a
+    /// comment or a later argument cannot be mistaken for the target.
+    pub target: Option<String>,
     pub start: usize,
     pub end: usize,
     pub has_block: bool,
@@ -307,6 +313,36 @@ fn rule_ref_from(node: &CssSyntaxNode, ctx: &ParseCtx) -> Option<RuleRef> {
     })
 }
 
+/// Strip one layer of matching quotes from a string literal's text.
+pub fn unquote(text: &str) -> String {
+    let t = text.trim();
+    let bytes = t.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        if (first == b'"' || first == b'\'') && bytes[bytes.len() - 1] == first {
+            return t[1..t.len() - 1].to_string();
+        }
+    }
+    t.to_string()
+}
+
+/// The first string-literal or raw-url token inside an at-rule, ignoring
+/// anything inside its block.
+fn at_rule_target_token(node: &CssSyntaxNode) -> Option<String> {
+    for token in node.descendants_tokens(Direction::Next) {
+        match token.kind() {
+            // A block starts here; its contents are not the at-rule's subject.
+            CssSyntaxKind::L_CURLY => return None,
+            CssSyntaxKind::CSS_STRING_LITERAL => return Some(unquote(token.text_trimmed())),
+            CssSyntaxKind::CSS_URL_VALUE_RAW_LITERAL => {
+                return Some(token.text_trimmed().trim().to_string())
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn at_rule_ref_from(node: &CssSyntaxNode, ctx: &ParseCtx) -> Option<AtRuleRef> {
     if node.kind() != CssSyntaxKind::CSS_AT_RULE {
         return None;
@@ -352,6 +388,7 @@ fn at_rule_ref_from(node: &CssSyntaxNode, ctx: &ParseCtx) -> Option<AtRuleRef> {
         .to_string();
 
     Some(AtRuleRef {
+        target: at_rule_target_token(node),
         node: node.clone(),
         name,
         prelude,

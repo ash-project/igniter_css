@@ -73,45 +73,21 @@ fn collapse_ws(input: &str) -> String {
     out.trim().to_string()
 }
 
-/// The first quoted string or `url(...)` in a prelude, unquoted.
-pub fn at_rule_target(prelude: &str) -> Option<String> {
-    let p = prelude.trim();
-    let bytes = p.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' | b'\'' => {
-                let quote = bytes[i];
-                let start = i + 1;
-                let mut j = start;
-                while j < bytes.len() {
-                    if bytes[j] == b'\\' {
-                        j += 2;
-                        continue;
-                    }
-                    if bytes[j] == quote {
-                        return p.get(start..j).map(|s| s.to_string());
-                    }
-                    j += 1;
-                }
-                return None;
-            }
-            _ => {
-                if p[i..].starts_with("url(") {
-                    let start = i + 4;
-                    let rest = &p[start..];
-                    let end = rest.find(')')?;
-                    let inner = rest[..end].trim();
-                    let inner = inner
-                        .trim_start_matches(['"', '\''])
-                        .trim_end_matches(['"', '\'']);
-                    return Some(inner.to_string());
-                }
-                i += 1;
-            }
+/// Normalise a caller-supplied needle (e.g. the `matching` argument of
+/// [`remove_at_rule`]) into the same shape as an AST-derived target.
+///
+/// This is the one place we touch text rather than tokens, and deliberately so:
+/// the argument is a bare path from Elixir, not CSS. Targets read *out of a
+/// stylesheet* always come from `AtRuleRef::target`, which is token-derived.
+pub fn normalize_target_needle(needle: &str) -> String {
+    let n = needle.trim();
+    // Tolerate a caller writing `url("x")` or `"x"` instead of just `x`.
+    if let Some(rest) = n.strip_prefix("url(") {
+        if let Some(inner) = rest.strip_suffix(')') {
+            return crate::locate::unquote(inner);
         }
     }
-    None
+    crate::locate::unquote(n)
 }
 
 /// Parse a caller-supplied at-rule line such as `@plugin "daisyui";`.
@@ -152,7 +128,8 @@ pub fn parse_at_rule_spec(line: &str) -> Result<AtRuleSpec> {
     let prelude = collapse_ws(&rule.prelude);
     Ok(AtRuleSpec {
         name: rule.name.clone(),
-        target: at_rule_target(&prelude),
+        // Read from the parsed line's own CST, not scanned out of the text.
+        target: rule.target.clone(),
         prelude,
         text,
     })
@@ -167,10 +144,15 @@ fn is_equivalent(spec: &AtRuleSpec, existing: &AtRuleRef) -> bool {
     if existing.name != spec.name {
         return false;
     }
-    let existing_prelude = collapse_ws(&existing.prelude);
-    match (&spec.target, at_rule_target(&existing_prelude)) {
-        (Some(a), Some(b)) => a == &b,
-        _ => existing_prelude == spec.prelude,
+    match (&spec.target, &existing.target) {
+        // Both name a subject: same subject means same at-rule, however each
+        // was quoted and whatever extra arguments follow.
+        (Some(a), Some(b)) => a == b,
+        // Neither has one (`@layer base, components;`): fall back to the
+        // whitespace-normalised prelude.
+        (None, None) => collapse_ws(&existing.prelude) == spec.prelude,
+        // One names a subject and the other does not: different rules.
+        _ => false,
     }
 }
 
@@ -253,7 +235,7 @@ pub fn remove_at_rule(
     options: ParseOptions,
 ) -> Result<Outcome> {
     let want_name = name.trim_start_matches('@').to_lowercase();
-    let want = matching.map(collapse_ws);
+    let want = matching.map(normalize_target_needle);
 
     run(source, options, |ctx| {
         let comments = comment_ranges(ctx);
@@ -263,11 +245,10 @@ pub fn remove_at_rule(
                 continue;
             }
             if let Some(w) = &want {
-                let prelude = collapse_ws(&at.prelude);
-                let hit = match (at_rule_target(&prelude), at_rule_target(w)) {
-                    (Some(a), Some(b)) => a == b,
-                    (Some(a), None) => a == *w,
-                    _ => prelude == *w,
+                let hit = match &at.target {
+                    Some(target) => target == w,
+                    // No subject to match on (`@layer base;`): compare preludes.
+                    None => collapse_ws(&at.prelude) == *w,
                 };
                 if !hit {
                     continue;
@@ -615,11 +596,41 @@ mod tests {
     // -- targets ------------------------------------------------------------
 
     #[test]
-    fn extracts_targets_from_preludes() {
-        assert_eq!(at_rule_target("\"a/b.css\""), Some("a/b.css".into()));
-        assert_eq!(at_rule_target("'a'"), Some("a".into()));
-        assert_eq!(at_rule_target("url(\"x\")"), Some("x".into()));
-        assert_eq!(at_rule_target("url(x)"), Some("x".into()));
-        assert_eq!(at_rule_target("base, components"), None);
+    fn targets_are_read_from_the_cst_not_scanned_from_text() {
+        use crate::ctx::ParseCtx;
+        use crate::locate::find_top_level_at_rules;
+
+        let cases = [
+            (r#"@import "a/b.css";"#, Some("a/b.css")),
+            (r#"@import 'a';"#, Some("a")),
+            (r#"@import url("x");"#, Some("x")),
+            ("@import url(x);", Some("x")),
+            ("@layer base, components;", None),
+            // A quote inside a comment must not be mistaken for the target.
+            (r#"@import /* "decoy" */ "real.css";"#, Some("real.css")),
+            // A block at-rule still has a subject when one precedes the `{`,
+            // so `@plugin "p" { ... }` dedupes against `@plugin "p";`.
+            (r#"@plugin "p" { name: "decoy"; }"#, Some("p")),
+            // But a string that only appears *inside* the block is not it.
+            (r#"@theme { --font: "decoy"; }"#, None),
+        ];
+
+        for (src, expected) in cases {
+            let ctx = ParseCtx::parse_default(src);
+            let rules = find_top_level_at_rules(&ctx);
+            assert_eq!(
+                rules[0].target.as_deref(),
+                expected,
+                "wrong target for {src}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_caller_supplied_needle_is_unquoted() {
+        assert_eq!(normalize_target_needle("a.css"), "a.css");
+        assert_eq!(normalize_target_needle("\"a.css\""), "a.css");
+        assert_eq!(normalize_target_needle("url(\"a.css\")"), "a.css");
+        assert_eq!(normalize_target_needle("url(a.css)"), "a.css");
     }
 }
