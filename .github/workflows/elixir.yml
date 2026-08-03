@@ -5,6 +5,8 @@
 name: CI
 on:
   push:
+    tags:
+      - "v*"
     branches: [main]
   pull_request:
     branches: [main]
@@ -31,8 +33,9 @@ jobs:
       igniter-upgrade: false
       rustler-precompiled-module: IgniterCss.Native
       rust-crate-dir: native/igniter_css
+      rust-project-name: igniter_css
+      rust-project-dir: native/igniter_css
       publish-docs: ${{ matrix.primary }}
-      release: false
       reuse: true
     secrets:
       HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
