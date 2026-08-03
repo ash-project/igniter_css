@@ -5,8 +5,6 @@
 name: CI
 on:
   push:
-    tags:
-      - "v*"
     branches: [main]
   pull_request:
     branches: [main]
@@ -32,6 +30,7 @@ jobs:
       erlang-version: ${{ matrix.erlang-version }}
       igniter-upgrade: false
       rustler-precompiled-module: IgniterCss.Native
+      rust-crate-dir: native/igniter_css
       publish-docs: ${{ matrix.primary }}
       release: false
       reuse: true
