@@ -129,3 +129,58 @@ fn the_error_says_what_happened() {
         "no limit given: {err}"
     );
 }
+
+/// Biome 0.5.8 panics on some inputs with "The parser is no longer
+/// progressing". This one was found by the property tests and shrunk by
+/// proptest; the seed is kept in tests/property.proptest-regressions.
+///
+/// Rustler would turn the panic into an exception in the calling process, which
+/// the VM survives but which breaks the promise that unpatchable input yields
+/// `{:error, reason}`. Every entry point must return an error instead.
+mod parser_panics {
+    use super::*;
+
+    /// `@layer` followed immediately by a comment, then an orphaned
+    /// declaration and a stray brace.
+    const PANICS_BIOME: &str = "@layer/*x*/\n  color: var(--brand);\n}\n";
+
+    #[test]
+    fn the_input_still_panics_the_underlying_parser() {
+        // If this ever stops panicking, Biome has fixed it upstream and the
+        // guard below is belt and braces rather than load-bearing.
+        let panicked = std::panic::catch_unwind(|| {
+            let _ = igniter_css::ctx::ParseCtx::parse_default(PANICS_BIOME);
+        })
+        .is_err();
+        assert!(
+            panicked,
+            "biome no longer panics on this input -- the guard may be removable"
+        );
+    }
+
+    #[test]
+    fn every_entry_point_returns_an_error_rather_than_unwinding() {
+        assert!(ensure_at_rule_line(PANICS_BIOME, "@plugin \"p\";", opts()).is_err());
+        assert!(ensure_rule(PANICS_BIOME, ".probe", opts()).is_err());
+        assert!(sort_properties(PANICS_BIOME, opts()).is_err());
+        assert!(remove_duplicates(PANICS_BIOME, DedupeOptions::default(), opts()).is_err());
+        assert!(has_rule(PANICS_BIOME, ".a", opts()).is_err());
+        assert!(analyze::analyze(PANICS_BIOME, opts()).is_err());
+        assert!(analyze::extract_colors(PANICS_BIOME, opts()).is_err());
+        assert!(transform::minify(PANICS_BIOME, opts()).is_err());
+        assert!(transform::beautify(PANICS_BIOME, opts()).is_err());
+
+        let v = analyze::validate(PANICS_BIOME, opts());
+        assert!(!v.valid);
+        assert!(!v.round_trips);
+    }
+
+    #[test]
+    fn the_error_is_the_documented_one() {
+        let err = ensure_rule(PANICS_BIOME, ".probe", opts()).unwrap_err();
+        assert!(
+            matches!(err, igniter_css::error::CssError::Unparseable(_)),
+            "expected Unparseable, got {err:?}"
+        );
+    }
+}
