@@ -38,7 +38,7 @@ fn is_word_char(c: char) -> bool {
 /// space while `url(x)` never gains one.
 pub fn minify(source: &str, options: ParseOptions) -> Result<String> {
     crate::ctx::check_nesting(source)?;
-    let ctx = ParseCtx::new(source, options);
+    let ctx = ParseCtx::try_new(source, options)?;
     let mut out = String::with_capacity(source.len());
     let mut prev_end: Option<usize> = None;
 
@@ -92,7 +92,7 @@ pub fn minify(source: &str, options: ParseOptions) -> Result<String> {
 /// A conventional pretty-printer: whole-file output, so never use it to patch.
 pub fn beautify(source: &str, options: ParseOptions) -> Result<String> {
     crate::ctx::check_nesting(source)?;
-    let ctx = ParseCtx::new(source, options);
+    let ctx = ParseCtx::try_new(source, options)?;
     let nl = ctx.nl();
     let unit = ctx.indent();
     let comments = all_comments(&ctx);

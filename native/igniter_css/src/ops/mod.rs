@@ -56,7 +56,7 @@ where
     F: FnOnce(&ParseCtx) -> Result<Vec<Edit>>,
 {
     crate::ctx::check_nesting(source)?;
-    let ctx = ParseCtx::new(source, options);
+    let ctx = ParseCtx::try_new(source, options)?;
     if !ctx.round_trips() {
         return Err(CssError::Unparseable(
             "the parser did not reproduce the input byte for byte".to_string(),
@@ -91,7 +91,7 @@ where
     F: FnOnce(&ParseCtx) -> Result<T>,
 {
     crate::ctx::check_nesting(source)?;
-    let ctx = ParseCtx::new(source, options);
+    let ctx = ParseCtx::try_new(source, options)?;
     if !ctx.round_trips() {
         return Err(CssError::Unparseable(
             "the parser did not reproduce the input byte for byte".to_string(),
@@ -147,7 +147,9 @@ pub fn split_declarations(text: &str) -> Vec<String> {
     }
 
     let probe = format!("a{{{text}}}");
-    let ctx = ParseCtx::parse_default(&probe);
+    let Ok(ctx) = ParseCtx::try_new(&probe, ParseOptions::default()) else {
+        return vec![ensure_semicolon(text.trim())];
+    };
     let Some(rule) = crate::locate::find_top_level_rules(&ctx).into_iter().next() else {
         return vec![ensure_semicolon(text.trim())];
     };

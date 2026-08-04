@@ -275,8 +275,10 @@ pub fn normalize_selector(input: &str) -> String {
         return trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
     }
     let probe = format!("{trimmed} {{}}");
-    let parse = biome_css_parser::parse_css(&probe, biome_css_parser::CssParserOptions::default());
-    let selector_list = parse
+    let Ok(ctx) = ParseCtx::try_new(&probe, crate::ctx::ParseOptions::default()) else {
+        return trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+    };
+    let selector_list = ctx
         .syntax()
         .descendants()
         .find(|n| n.kind() == CssSyntaxKind::CSS_SELECTOR_LIST);
@@ -305,12 +307,21 @@ pub fn normalize_property(input: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn rule_ref_from(node: &CssSyntaxNode, ctx: &ParseCtx) -> Option<RuleRef> {
-    if node.kind() != CssSyntaxKind::CSS_QUALIFIED_RULE {
+    // Native CSS nesting gives `&:hover { }` a different shape from a top-level
+    // rule: `CSS_NESTED_QUALIFIED_RULE` holding a `CSS_RELATIVE_SELECTOR_LIST`.
+    // Both are rules, and queries that descend must see both.
+    if !matches!(
+        node.kind(),
+        CssSyntaxKind::CSS_QUALIFIED_RULE | CssSyntaxKind::CSS_NESTED_QUALIFIED_RULE
+    ) {
         return None;
     }
-    let selector_list = node
-        .children()
-        .find(|c| c.kind() == CssSyntaxKind::CSS_SELECTOR_LIST)?;
+    let selector_list = node.children().find(|c| {
+        matches!(
+            c.kind(),
+            CssSyntaxKind::CSS_SELECTOR_LIST | CssSyntaxKind::CSS_RELATIVE_SELECTOR_LIST
+        )
+    })?;
     let block = block_child(node)?;
     let (body_open, body_close) = block_bounds(&block)?;
     let (start, end) = trimmed(node);
@@ -355,6 +366,10 @@ fn at_rule_target_token(node: &CssSyntaxNode) -> Option<String> {
         }
     }
     None
+}
+
+pub fn at_rule_ref(ctx: &ParseCtx, node: &CssSyntaxNode) -> Option<AtRuleRef> {
+    at_rule_ref_from(node, ctx)
 }
 
 fn at_rule_ref_from(node: &CssSyntaxNode, ctx: &ParseCtx) -> Option<AtRuleRef> {
@@ -404,12 +419,13 @@ fn at_rule_ref_from(node: &CssSyntaxNode, ctx: &ParseCtx) -> Option<AtRuleRef> {
     // Canonical prelude: the tokens between the name and the `;`/`{`, joined by
     // single spaces. Trivia (whitespace and comments) is excluded by
     // construction because we read `text_trimmed` of each token.
+    // `take_while`, not `filter`: tokens come in document order, so stopping at
+    // the prelude's end keeps this proportional to the prelude rather than to
+    // the whole subtree -- which for an outer at-rule is the entire file.
     let prelude_norm = inner
         .descendants_tokens(Direction::Next)
-        .filter(|t| {
-            let s = usize::from(t.text_trimmed_range().start());
-            s >= name_end && s < prelude_end
-        })
+        .take_while(|t| usize::from(t.text_trimmed_range().start()) < prelude_end)
+        .filter(|t| usize::from(t.text_trimmed_range().start()) >= name_end)
         .map(|t| t.text_trimmed().to_string())
         .collect::<Vec<_>>()
         .join(" ");
@@ -1118,5 +1134,84 @@ mod tests {
         let comments = all_comments(&c);
         let texts: Vec<&str> = comments.iter().map(|(_, _, t)| t.as_str()).collect();
         assert_eq!(texts, vec!["/* a */", "/* b */", "/* c */", "/* d */"]);
+    }
+}
+
+#[cfg(test)]
+mod nesting_tests {
+    use super::*;
+    use crate::ctx::ParseCtx;
+
+    fn ctx(src: &str) -> ParseCtx {
+        ParseCtx::parse_default(src)
+    }
+
+    const NESTED: &str = ".card {\n  color: red;\n  &:hover {\n    color: blue;\n  }\n  .title {\n    font-size: 2rem;\n  }\n}\n";
+
+    #[test]
+    fn nested_rules_are_found_when_descending() {
+        let c = ctx(NESTED);
+        let all: Vec<String> = find_all_rules(&c)
+            .into_iter()
+            .map(|r| r.selector_norm)
+            .collect();
+        assert_eq!(all, vec![".card", "&:hover", ".title"]);
+    }
+
+    #[test]
+    fn nested_rules_stay_out_of_the_top_level() {
+        let c = ctx(NESTED);
+        let top: Vec<String> = find_top_level_rules(&c)
+            .into_iter()
+            .map(|r| r.selector_norm)
+            .collect();
+        assert_eq!(top, vec![".card"]);
+        assert!(find_rule_by_selector(&c, "&:hover").is_none());
+    }
+
+    #[test]
+    fn a_nested_rule_can_be_addressed_explicitly() {
+        let c = ctx(NESTED);
+        assert!(matches!(
+            find_rule_by_selector_anywhere(&c, "&:hover"),
+            MatchResult::One(_)
+        ));
+        assert!(matches!(
+            find_rule_by_selector_anywhere(&c, ".title"),
+            MatchResult::One(_)
+        ));
+    }
+
+    #[test]
+    fn declarations_of_a_nested_rule_are_its_own() {
+        let c = ctx(NESTED);
+        let hover = find_rule_by_selector_anywhere(&c, "&:hover").one().unwrap();
+        let decls: Vec<String> = declarations_in(&c, &hover)
+            .into_iter()
+            .map(|d| d.property)
+            .collect();
+        assert_eq!(decls, vec!["color"]);
+    }
+
+    #[test]
+    fn an_outer_rule_lists_only_its_own_declarations() {
+        let c = ctx(NESTED);
+        let card = find_rule_by_selector(&c, ".card").one().unwrap();
+        let decls: Vec<String> = declarations_in(&c, &card)
+            .into_iter()
+            .map(|d| d.property)
+            .collect();
+        assert_eq!(decls, vec!["color"]);
+    }
+
+    #[test]
+    fn nesting_inside_an_at_rule_is_reached_too() {
+        let c =
+            ctx("@media print {\n  .a {\n    color: red;\n    &:hover { color: blue; }\n  }\n}\n");
+        let all: Vec<String> = find_all_rules(&c)
+            .into_iter()
+            .map(|r| r.selector_norm)
+            .collect();
+        assert_eq!(all, vec![".a", "&:hover"]);
     }
 }

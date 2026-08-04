@@ -173,6 +173,25 @@ impl ParseCtx {
         Self::new(source, ParseOptions::default())
     }
 
+    /// Parse, converting a panic inside the parser into an error.
+    ///
+    /// Biome's CSS parser asserts that it keeps making progress and panics if
+    /// it does not; fuzzing found inputs that trip it ("The parser is no longer
+    /// progressing"). Rustler would turn that into an exception in the calling
+    /// process, but this library promises `{:error, reason}` for input it
+    /// cannot handle, so the panic is caught here and reported as one.
+    ///
+    /// `AssertUnwindSafe` is sound because nothing is shared: the closure owns
+    /// its inputs and any half-built parser state is dropped with them.
+    pub fn try_new(source: &str, options: ParseOptions) -> crate::error::Result<Self> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::new(source, options)))
+            .map_err(|_| {
+                crate::error::CssError::Unparseable(
+                    "the CSS parser failed on this input and could not report where".to_string(),
+                )
+            })
+    }
+
     pub fn source(&self) -> &str {
         &self.source
     }
