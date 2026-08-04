@@ -4,16 +4,77 @@
 
 //! `ParseCtx` owns the source string and its lossless parse, plus the handful
 //! of formatting facts every codemod needs so that inserted text looks like the
-//! text the user already wrote (ROADMAP Phase 1, and rules B/C in §8).
+//! text the user already wrote.
 //!
 //! This module and `locate` are the only two places allowed to name Biome
-//! types. Isolating them here is the mitigation for R2 (Biome API churn).
+//! types, so an upgrade touches two files rather than twenty.
 
 use biome_css_parser::{parse_css, CssParse, CssParserOptions};
 use biome_css_syntax::{CssSyntaxKind, CssSyntaxNode};
 use biome_rowan::TextRange;
 
 pub const BOM: &str = "\u{feff}";
+
+/// Maximum nesting we are willing to hand to the parser.
+///
+/// Biome's CSS parser is recursive descent and rowan's tree drop recurses too,
+/// so deeply nested input overflows the stack. That is an abort, not a panic:
+/// `catch_unwind` cannot intercept it, and inside a NIF it would take the whole
+/// VM down rather than raise in the calling process.
+///
+/// Measured on a 2 MB test-thread stack, both `{` nesting and `:not(` nesting
+/// survive 1000 levels and abort at 2000. A BEAM dirty scheduler thread may
+/// have less, so this sits an order of magnitude below the observed failure --
+/// and still far above real CSS, which rarely exceeds ten.
+pub const MAX_NESTING_DEPTH: usize = 256;
+
+/// Deepest `{` or `(` nesting in `source`, ignoring strings and comments.
+///
+/// A plain byte scan: it must be cheap and, above all, must not itself recurse.
+pub fn nesting_depth(source: &str) -> usize {
+    let bytes = source.as_bytes();
+    let (mut depth, mut max) = (0usize, 0usize);
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' | b'\'' => {
+                let quote = bytes[i];
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'{' | b'(' => {
+                depth += 1;
+                max = max.max(depth);
+            }
+            b'}' | b')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        i += 1;
+    }
+    max
+}
+
+/// Refuse input nested deeply enough to risk a stack overflow in the parser.
+pub fn check_nesting(source: &str) -> crate::error::Result<()> {
+    let depth = nesting_depth(source);
+    if depth > MAX_NESTING_DEPTH {
+        return Err(crate::error::CssError::Unparseable(format!(
+            "nested {depth} levels deep, limit is {MAX_NESTING_DEPTH}; \
+             refusing to parse input that could overflow the stack"
+        )));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Newline {
@@ -112,6 +173,25 @@ impl ParseCtx {
         Self::new(source, ParseOptions::default())
     }
 
+    /// Parse, converting a panic inside the parser into an error.
+    ///
+    /// Biome's CSS parser asserts that it keeps making progress and panics if
+    /// it does not; fuzzing found inputs that trip it ("The parser is no longer
+    /// progressing"). Rustler would turn that into an exception in the calling
+    /// process, but this library promises `{:error, reason}` for input it
+    /// cannot handle, so the panic is caught here and reported as one.
+    ///
+    /// `AssertUnwindSafe` is sound because nothing is shared: the closure owns
+    /// its inputs and any half-built parser state is dropped with them.
+    pub fn try_new(source: &str, options: ParseOptions) -> crate::error::Result<Self> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::new(source, options)))
+            .map_err(|_| {
+                crate::error::CssError::Unparseable(
+                    "the CSS parser failed on this input and could not report where".to_string(),
+                )
+            })
+    }
+
     pub fn source(&self) -> &str {
         &self.source
     }
@@ -130,8 +210,8 @@ impl ParseCtx {
 
     /// The parse is lossless by construction, but assert it before we let any
     /// codemod compute offsets against it. If this ever fails, the byte-range
-    /// design's foundation is gone and we must refuse to patch (hard constraint
-    /// #4: never destroy input).
+    /// design's foundation is gone and we must refuse to patch rather than
+    /// risk destroying the input.
     pub fn round_trips(&self) -> bool {
         self.parse.syntax().to_string() == self.source
     }
@@ -174,7 +254,7 @@ impl ParseCtx {
     /// Checked against the token stream, so braces inside strings and comments
     /// do not count. An unbalanced file cannot be patched safely: text inserted
     /// "at the top level" would land inside somebody's unterminated block, and
-    /// hard constraint #4 says a wrong patch is far worse than no patch.
+    /// a wrong patch is far worse than no patch.
     pub fn braces_are_balanced(&self) -> bool {
         let mut depth = 0i32;
         for token in self
@@ -220,7 +300,7 @@ impl ParseCtx {
     }
 
     /// Leading whitespace of the line containing `offset` -- the indentation to
-    /// copy when inserting a sibling next to it (rule B).
+    /// copy when inserting a sibling next to it.
     pub fn indent_at(&self, offset: usize) -> &str {
         let start = self.line_start(offset);
         let line = &self.source[start..];

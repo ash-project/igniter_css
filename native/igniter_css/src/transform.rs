@@ -10,7 +10,7 @@
 //!
 //! Keep them out of Igniter installers. They exist for build-time and reporting
 //! use, they are never used to patch a user's file in place, and the codemods
-//! never route their output through here (ROADMAP §3, §6).
+//! never route their output through here.
 
 use crate::ctx::{ParseCtx, ParseOptions};
 use crate::error::Result;
@@ -37,7 +37,8 @@ fn is_word_char(c: char) -> bool {
 /// would change how the result tokenises -- so `and (min-width: 1px)` keeps its
 /// space while `url(x)` never gains one.
 pub fn minify(source: &str, options: ParseOptions) -> Result<String> {
-    let ctx = ParseCtx::new(source, options);
+    crate::ctx::check_nesting(source)?;
+    let ctx = ParseCtx::try_new(source, options)?;
     let mut out = String::with_capacity(source.len());
     let mut prev_end: Option<usize> = None;
 
@@ -90,7 +91,8 @@ pub fn minify(source: &str, options: ParseOptions) -> Result<String> {
 ///
 /// A conventional pretty-printer: whole-file output, so never use it to patch.
 pub fn beautify(source: &str, options: ParseOptions) -> Result<String> {
-    let ctx = ParseCtx::new(source, options);
+    crate::ctx::check_nesting(source)?;
+    let ctx = ParseCtx::try_new(source, options)?;
     let nl = ctx.nl();
     let unit = ctx.indent();
     let comments = all_comments(&ctx);

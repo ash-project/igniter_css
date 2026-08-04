@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! The edit engine (ROADMAP §6, Phase 1).
+//! The edit engine.
 //!
 //! Every codemod in this crate produces `Vec<Edit>` -- byte ranges into the
 //! *original* source plus replacement text -- and never reprints the tree.
@@ -56,7 +56,7 @@ impl Edit {
 ///
 /// * Overlapping ranges are a hard error -- we never silently merge them.
 /// * Edits are applied back-to-front so earlier offsets stay valid.
-/// * `apply_edits(src, vec![])` returns `src` byte for byte (Phase 1 acceptance).
+/// * `apply_edits(src, vec![])` returns `src` byte for byte.
 pub fn apply_edits(source: &str, mut edits: Vec<Edit>) -> Result<String> {
     if edits.is_empty() {
         return Ok(source.to_string());
@@ -110,7 +110,7 @@ pub fn apply_edits(source: &str, mut edits: Vec<Edit>) -> Result<String> {
 }
 
 /// Drop edits that would not change anything, so a codemod can report
-/// `changed: false` honestly (ROADMAP §8 rule A).
+/// `changed: false` honestly.
 pub fn prune_noop_edits(source: &str, edits: Vec<Edit>) -> Vec<Edit> {
     edits
         .into_iter()

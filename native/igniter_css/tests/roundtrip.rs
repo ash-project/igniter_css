@@ -2,11 +2,12 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Phase 0 GATE (ROADMAP §8).
+//! The lossless round-trip gate.
 //!
 //! `parse.syntax().to_string() == source` must hold byte-for-byte across the
-//! entire fixture corpus. Nothing else in this crate was allowed to exist until
-//! this passed, and it stays in CI forever afterwards (§9.1).
+//! entire fixture corpus. Every byte-range edit in this crate depends on it: if
+//! the parse cannot reproduce its input, the offsets it reports cannot be
+//! trusted and no codemod may run.
 
 mod support;
 
@@ -80,7 +81,7 @@ fn round_trip_holds_even_when_the_parse_has_errors() {
     );
 }
 
-/// R1: Tailwind v4 at-rules must not merely survive -- they must parse without
+/// Tailwind v4 at-rules must not merely survive -- they must parse without
 /// diagnostics, so the location layer can find them as real nodes.
 #[test]
 fn tailwind_v4_at_rules_parse_without_diagnostics() {
@@ -89,7 +90,7 @@ fn tailwind_v4_at_rules_parse_without_diagnostics() {
     assert_eq!(
         ctx.diagnostics_count(),
         0,
-        "Tailwind v4 fixture produced parse diagnostics; re-evaluate R1"
+        "Tailwind v4 fixture produced parse diagnostics"
     );
     assert!(ctx.round_trips());
 }

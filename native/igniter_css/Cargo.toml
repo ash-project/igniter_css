@@ -16,9 +16,18 @@ path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# Biome CSS crates are Biome-internal and published at 0.5.x with NO API
-# stability guarantee. They are pinned with `=` deliberately. Upgrading is a
-# tested activity, never a `cargo update`. See ROADMAP §5/§12.
+# The biome crates are Biome-internal, published at 0.5.x with no API stability
+# guarantee, and they churn between patch releases. Pinned with `=` on purpose:
+# upgrading is a deliberate, tested activity, never a `cargo update`.
+#
+# 0.5.8 is the newest published version of all three, and it is reachable only
+# because this crate does not depend on biome_css_formatter. That crate is stuck
+# at 0.5.7 and requires biome_css_syntax ^0.5.7 and biome_rowan ^0.5.7, so
+# adding it would drag the whole graph back a release -- which is exactly why
+# igniter_js, which does format CSS, pins its entire biome set to 0.5.7.
+#
+# We do not format: IgniterCss.Transform::beautify is a byte-preserving
+# pretty-printer written against the CST. Keep it that way, or this pin drops.
 biome_css_parser = "=0.5.8"
 biome_css_syntax = "=0.5.8"
 biome_rowan = "=0.5.8"

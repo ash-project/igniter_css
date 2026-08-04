@@ -2,12 +2,11 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Phase 4: the NIF boundary. Deliberately thin.
+//! The NIF boundary. Deliberately thin.
 //!
 //! **Elixir sends intent; Rust returns text.** The CST is never exported across
-//! the boundary in any form -- marshalling trees between languages is what made
-//! the previous implementation painful, and it buys nothing here (ROADMAP §8
-//! Phase 4).
+//! the boundary in any form: marshalling trees between languages is costly to
+//! maintain and buys nothing here.
 //!
 //! Two other rules hold throughout this module:
 //!

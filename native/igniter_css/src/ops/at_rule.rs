@@ -6,7 +6,7 @@
 //! `@custom-variant` and friends.
 //!
 //! For these, the grammar barely matters: what we need is an *anchor offset*,
-//! and even a bogus node provides one (R1, mitigation 3).
+//! and even a node Biome could not parse still provides one.
 
 use crate::ctx::{ParseCtx, ParseOptions};
 use crate::edit::Edit;
@@ -60,6 +60,7 @@ pub fn parse_at_rule_spec(line: &str) -> Result<AtRuleSpec> {
         )));
     }
     validate_snippet(trimmed, "at-rule line")?;
+    crate::ctx::check_nesting(trimmed)?;
 
     let has_block = trimmed.contains('{');
     let text = if has_block || trimmed.ends_with(';') {
@@ -68,7 +69,7 @@ pub fn parse_at_rule_spec(line: &str) -> Result<AtRuleSpec> {
         format!("{trimmed};")
     };
 
-    let ctx = ParseCtx::new(&text, ParseOptions::default());
+    let ctx = ParseCtx::try_new(&text, ParseOptions::default())?;
     if !ctx.round_trips() {
         return Err(CssError::InvalidInput(format!(
             "cannot understand at-rule line {trimmed:?}"
@@ -135,10 +136,7 @@ fn insertion_offset(ctx: &ParseCtx, spec: &AtRuleSpec) -> usize {
     for node in top_level_nodes(ctx) {
         match node.kind() {
             CssSyntaxKind::CSS_AT_RULE => {
-                let Some(at) = find_top_level_at_rules(ctx)
-                    .into_iter()
-                    .find(|r| r.node == node)
-                else {
+                let Some(at) = crate::locate::at_rule_ref(ctx, &node) else {
                     continue;
                 };
                 if is_prologue_first && !PROLOGUE_FIRST.contains(&at.name.as_str()) {
@@ -159,7 +157,7 @@ fn insertion_offset(ctx: &ParseCtx, spec: &AtRuleSpec) -> usize {
 }
 
 /// Insert `line` at the top level unless an equivalent at-rule is already
-/// present (ROADMAP §8, `ensure_at_rule_line`).
+/// present.
 pub fn ensure_at_rule_line(source: &str, line: &str, options: ParseOptions) -> Result<Outcome> {
     let spec = parse_at_rule_spec(line)?;
     run(source, options, |ctx| {

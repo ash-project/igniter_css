@@ -64,13 +64,14 @@ fn prelude_of(ctx: &ParseCtx, list: &CssSyntaxNode) -> String {
 /// `@media`/`@supports`/`@container` preludes enclosing this node, outermost
 /// first.
 fn conditions_of(ctx: &ParseCtx, node: &CssSyntaxNode) -> Vec<String> {
+    // Read each ancestor directly. Searching a freshly built list of every
+    // at-rule in the file, once per ancestor, made this quadratic in nesting
+    // depth for a node we already hold.
     let mut out: Vec<String> = node
         .ancestors()
         .filter(|a| a.kind() == CssSyntaxKind::CSS_AT_RULE)
         .filter_map(|a| {
-            find_all_at_rules(ctx)
-                .into_iter()
-                .find(|r| r.node == a)
+            crate::locate::at_rule_ref(ctx, &a)
                 .filter(|r| matches!(r.name.as_str(), "media" | "supports" | "container"))
                 .map(|r| format!("@{} {}", r.name, r.prelude).trim().to_string())
         })
@@ -308,10 +309,14 @@ pub fn value_has_color(value: &str) -> bool {
     if value.trim().is_empty() {
         return false;
     }
+    if crate::ctx::check_nesting(value).is_err() {
+        return false;
+    }
     let probe = format!("a{{b:{value}}}");
-    let parse = biome_css_parser::parse_css(&probe, biome_css_parser::CssParserOptions::default());
-    parse
-        .syntax()
+    let Ok(ctx) = ParseCtx::try_new(&probe, ParseOptions::default()) else {
+        return false;
+    };
+    ctx.syntax()
         .descendants()
         .find(|n| n.kind() == CssSyntaxKind::CSS_GENERIC_COMPONENT_VALUE_LIST)
         .is_some_and(|list| value_node_has_color(&list))
@@ -568,7 +573,25 @@ pub struct Validation {
 /// raised no errors. The round-trip half is the one that actually matters for
 /// safety -- it is what every codemod checks before touching a file.
 pub fn validate(source: &str, options: ParseOptions) -> Validation {
-    let ctx = ParseCtx::new(source, options);
+    if let Err(e) = crate::ctx::check_nesting(source) {
+        return Validation {
+            valid: false,
+            diagnostics: 0,
+            round_trips: false,
+            message: e.to_string(),
+        };
+    }
+    let ctx = match ParseCtx::try_new(source, options) {
+        Ok(c) => c,
+        Err(e) => {
+            return Validation {
+                valid: false,
+                diagnostics: 0,
+                round_trips: false,
+                message: e.to_string(),
+            }
+        }
+    };
     let round_trips = ctx.round_trips();
     let diagnostics = ctx.diagnostics_count();
     let has_errors = ctx.has_errors();

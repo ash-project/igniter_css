@@ -5,7 +5,7 @@
 //! Whole-file tidying ops that are nevertheless **diff-minimal**.
 //!
 //! Sorting and de-duplication are usually implemented by reprinting the tree,
-//! which violates hard constraint #2. Here they are implemented as permutations
+//! which would reformat the whole file. Here they are implemented as permutations
 //! and deletions of existing byte ranges instead: lines move or disappear, and
 //! every other byte in the file is untouched. A block we cannot rearrange
 //! safely is skipped and reported in `diagnostics` rather than reformatted.

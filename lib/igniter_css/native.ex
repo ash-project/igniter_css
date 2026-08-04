@@ -4,8 +4,8 @@
 
 defmodule IgniterCss.Native do
   @moduledoc false
-  # Precompiled NIFs, so end users never need a Rust toolchain
-  # (hard constraint #5). Set IGNITERCSS_BUILD=1 to force a local build.
+  # Precompiled NIFs, so end users never need a Rust toolchain.
+  # Set IGNITERCSS_BUILD=1 to force a local build.
 
   mix_config = Mix.Project.config()
   version = mix_config[:version]

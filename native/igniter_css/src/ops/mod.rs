@@ -2,15 +2,15 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Phase 3 codemods. Every op in here obeys the shared rules from ROADMAP §8:
+//! The codemods. Every op in here obeys these shared rules:
 //!
-//! * **A. Idempotent** -- check then edit; if the desired state already holds,
+//! * **Idempotent** -- check then edit; if the desired state already holds,
 //!   produce zero edits and report `changed: false`.
-//! * **B. Indentation** -- inserted lines copy the indentation of the sibling
-//!   they land next to; empty bodies use the file's inferred indent unit.
-//! * **C. Newlines** -- always `ctx.nl()`, never a hardcoded `\n`.
-//! * **D. Comment ownership on delete** -- see [`crate::trivia`].
-//! * **E. Value-only replacement** -- changing a value edits the value range
+//! * **Indentation** -- inserted lines copy the indentation of the sibling they
+//!   land next to; empty bodies use the file's inferred indent unit.
+//! * **Newlines** -- always `ctx.nl()`, never a hardcoded `\n`.
+//! * **Comment ownership on delete** -- see [`crate::trivia`].
+//! * **Value-only replacement** -- changing a value edits the value range
 //!   alone, so inline comments and `!important` survive.
 
 pub mod at_rule;
@@ -47,15 +47,16 @@ impl Outcome {
 
 /// Run a codemod end to end.
 ///
-/// The round-trip assertion here is the enforcement point for hard constraint
-/// #4: if the parse does not reproduce the source byte for byte we cannot trust
-/// any offset it gives us, so we refuse to patch and leave the file untouched
-/// rather than risk a wrong edit.
+/// The round-trip assertion here is what keeps every edit honest: if the parse
+/// does not reproduce the source byte for byte we cannot trust any offset it
+/// gives us, so we refuse to patch and leave the file untouched rather than
+/// risk a wrong edit.
 pub fn run<F>(source: &str, options: ParseOptions, build: F) -> Result<Outcome>
 where
     F: FnOnce(&ParseCtx) -> Result<Vec<Edit>>,
 {
-    let ctx = ParseCtx::new(source, options);
+    crate::ctx::check_nesting(source)?;
+    let ctx = ParseCtx::try_new(source, options)?;
     if !ctx.round_trips() {
         return Err(CssError::Unparseable(
             "the parser did not reproduce the input byte for byte".to_string(),
@@ -89,7 +90,8 @@ pub fn query<T, F>(source: &str, options: ParseOptions, f: F) -> Result<T>
 where
     F: FnOnce(&ParseCtx) -> Result<T>,
 {
-    let ctx = ParseCtx::new(source, options);
+    crate::ctx::check_nesting(source)?;
+    let ctx = ParseCtx::try_new(source, options)?;
     if !ctx.round_trips() {
         return Err(CssError::Unparseable(
             "the parser did not reproduce the input byte for byte".to_string(),
@@ -145,7 +147,9 @@ pub fn split_declarations(text: &str) -> Vec<String> {
     }
 
     let probe = format!("a{{{text}}}");
-    let ctx = ParseCtx::parse_default(&probe);
+    let Ok(ctx) = ParseCtx::try_new(&probe, ParseOptions::default()) else {
+        return vec![ensure_semicolon(text.trim())];
+    };
     let Some(rule) = crate::locate::find_top_level_rules(&ctx).into_iter().next() else {
         return vec![ensure_semicolon(text.trim())];
     };
@@ -179,6 +183,11 @@ pub fn ends_with_semicolon(text: &str) -> bool {
 /// Cheap structural guard, not a full validation: we re-parse the result
 /// anyway, but catching an unbalanced brace here gives a far better error.
 pub fn validate_snippet(text: &str, what: &str) -> Result<()> {
+    // Text spliced into a file has to satisfy the reader's nesting limit too,
+    // or we would write something we then refuse to parse.
+    crate::ctx::check_nesting(text)
+        .map_err(|_| CssError::InvalidInput(format!("{what} is nested too deeply")))?;
+
     let mut depth = 0i32;
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
