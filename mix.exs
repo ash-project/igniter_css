@@ -114,13 +114,13 @@ defmodule IgniterCss.MixProject do
     [
       {:rustler, "~> 0.38.0", optional: true},
       {:rustler_precompiled, "~> 0.9"},
-      {:igniter, "~> 0.5", optional: true},
+      {:igniter, "~> 0.8.3", optional: true},
       {:mix_audit, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:sobelow, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:dialyxir, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:ex_check, "~> 0.16", only: [:dev, :test]},
       {:credo, ">= 0.0.0", only: [:dev, :test], runtime: false},
-      {:ex_doc, "~> 0.38", only: [:dev, :test], runtime: false}
+      {:ex_doc, "~> 0.40.3", only: [:dev, :test], runtime: false}
     ]
   end
 
