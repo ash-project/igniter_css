@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! ROADMAP §9: the invariants that must hold for **every op** against **every
+//! The invariants that must hold for **every op** against **every
 //! fixture**, not just for the cases somebody remembered to write a unit test
 //! for.
 //!

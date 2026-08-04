@@ -21,8 +21,8 @@ pub enum CssError {
         end: usize,
         len: usize,
     },
-    /// More than one top-level rule matched the selector. ROADMAP §2 rule 4 and
-    /// §11 R4: error, never guess.
+    /// More than one top-level rule matched the selector. Error, never guess:
+    /// picking one is how a codemod produces a surprising diff.
     AmbiguousSelector { selector: String, count: usize },
     /// The caller asked to operate on something that isn't there.
     NotFound(String),

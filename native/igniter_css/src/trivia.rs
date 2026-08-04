@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Rule D -- comment ownership on delete (ROADMAP §8).
+//! Comment ownership on delete.
 //!
 //! When a codemod removes a node, which of the comments around it go with it?
 //! The convention, decided deliberately rather than inferred:

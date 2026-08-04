@@ -159,7 +159,7 @@ fn insertion_offset(ctx: &ParseCtx, spec: &AtRuleSpec) -> usize {
 }
 
 /// Insert `line` at the top level unless an equivalent at-rule is already
-/// present (ROADMAP §8, `ensure_at_rule_line`).
+/// present.
 pub fn ensure_at_rule_line(source: &str, line: &str, options: ParseOptions) -> Result<Outcome> {
     let spec = parse_at_rule_spec(line)?;
     run(source, options, |ctx| {

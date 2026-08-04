@@ -10,7 +10,7 @@
 //!
 //! Keep them out of Igniter installers. They exist for build-time and reporting
 //! use, they are never used to patch a user's file in place, and the codemods
-//! never route their output through here (ROADMAP §3, §6).
+//! never route their output through here.
 
 use crate::ctx::{ParseCtx, ParseOptions};
 use crate::error::Result;

@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! ROADMAP §9.6: property tests over generated CSS.
+//! Property tests over generated CSS.
 //!
 //! Unit tests check the cases we thought of. These check the invariants against
 //! input nobody wrote by hand -- including input that is not valid CSS at all,

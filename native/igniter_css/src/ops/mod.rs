@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Phase 3 codemods. Every op in here obeys the shared rules from ROADMAP §8:
+//! The codemods. Every op in here obeys these shared rules:
 //!
 //! * **A. Idempotent** -- check then edit; if the desired state already holds,
 //!   produce zero edits and report `changed: false`.

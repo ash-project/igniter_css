@@ -5,7 +5,7 @@
 //! Phase 2: typed queries over the CST that return **byte ranges**, never owned
 //! strings to be reprinted.
 //!
-//! Matching rules for v1 are deliberately strict (ROADMAP §8 Phase 2):
+//! Matching rules are deliberately strict:
 //!   * top-level rules only, unless the caller explicitly opts into descending;
 //!   * selectors compared on a normalised form, never raw equality and never
 //!     substring/fuzzy;
@@ -546,7 +546,7 @@ pub fn find_rule_by_selector(ctx: &ParseCtx, selector: &str) -> MatchResult {
 }
 
 /// Same, but searching every rule in the file including nested ones. Callers
-/// must opt in explicitly (ROADMAP Phase 2).
+/// must opt in explicitly.
 pub fn find_rule_by_selector_anywhere(ctx: &ParseCtx, selector: &str) -> MatchResult {
     find_rule_among(find_all_rules(ctx), selector)
 }
@@ -669,7 +669,7 @@ pub fn last_top_level_at_rule_end(ctx: &ParseCtx, names: &[&str]) -> Option<usiz
 
 /// Where a new top-level line should go when the file has no anchor at-rule of
 /// its own family: after any leading comment block and `@charset`, but before
-/// the first real rule (ROADMAP §8, `ensure_at_rule_line`).
+/// the first real rule.
 pub fn top_of_file_anchor(ctx: &ParseCtx) -> usize {
     let src = ctx.source();
     // `ctx.source()` never contains a BOM -- it is stripped at parse time and

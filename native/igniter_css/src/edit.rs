@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! The edit engine (ROADMAP §6, Phase 1).
+//! The edit engine.
 //!
 //! Every codemod in this crate produces `Vec<Edit>` -- byte ranges into the
 //! *original* source plus replacement text -- and never reprints the tree.
@@ -110,7 +110,7 @@ pub fn apply_edits(source: &str, mut edits: Vec<Edit>) -> Result<String> {
 }
 
 /// Drop edits that would not change anything, so a codemod can report
-/// `changed: false` honestly (ROADMAP §8 rule A).
+/// `changed: false` honestly.
 pub fn prune_noop_edits(source: &str, edits: Vec<Edit>) -> Vec<Edit> {
     edits
         .into_iter()

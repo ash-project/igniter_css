@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Phase 0 GATE (ROADMAP §8).
+//! The lossless round-trip gate.
 //!
 //! `parse.syntax().to_string() == source` must hold byte-for-byte across the
 //! entire fixture corpus. Nothing else in this crate was allowed to exist until

@@ -4,7 +4,7 @@
 
 //! `ParseCtx` owns the source string and its lossless parse, plus the handful
 //! of formatting facts every codemod needs so that inserted text looks like the
-//! text the user already wrote (ROADMAP Phase 1, and rules B/C in §8).
+//! text the user already wrote.
 //!
 //! This module and `locate` are the only two places allowed to name Biome
 //! types. Isolating them here is the mitigation for R2 (Biome API churn).
