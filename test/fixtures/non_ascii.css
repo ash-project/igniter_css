@@ -1,0 +1,8 @@
+/* Ünïcödé cömment — with em dash and ellipsis… */
+.non-ascii::after {
+  content: "日本語 ✓";
+}
+
+.rtl {
+  content: "سلام";
+}

@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2025 igniter_css contributors <https://github.com/ash-project/igniter_css/graphs/contributors>
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name = "igniter_css"
+version = "0.2.0"
+authors = ["Shahryar Tavakkoli"]
+edition = "2021"
+
+[lib]
+name = "igniter_css"
+path = "src/lib.rs"
+# `rlib` is required so the Rust test-suite (round-trip, golden, idempotency,
+# property tests) can link against the crate. `cdylib` is what Rustler loads.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Biome CSS crates are Biome-internal and published at 0.5.x with NO API
+# stability guarantee. They are pinned with `=` deliberately. Upgrading is a
+# tested activity, never a `cargo update`. See ROADMAP §5/§12.
+biome_css_parser = "=0.5.8"
+biome_css_syntax = "=0.5.8"
+biome_rowan = "=0.5.8"
+rustler = "=0.38.0"
+
+[dev-dependencies]
+proptest = "1"
+
+[profile.release]
+lto = false

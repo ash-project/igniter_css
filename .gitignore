@@ -29,5 +29,8 @@ igniter_css-*.tar
 .DS_Store
 
 .elixir_ls
-.ropeproject
-/plibs/css_tools/src/css_tools/__pycache__
+
+# Compiled NIF artifacts. The precompiled ones are attached to a release and
+# fetched by rustler_precompiled; local builds land here.
+/priv/native/
+/native/igniter_css/target/

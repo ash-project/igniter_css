@@ -1,0 +1,97 @@
+@charset "utf-8";
+@import url("https://fonts.googleapis.com/css2?family=Inter") screen and (min-width: 0);
+@namespace svg url(http://www.w3.org/2000/svg);
+
+:root {
+  --brand: #4f46e5;
+  --spacing: 0.25rem;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.05);
+}
+
+html:where(:not(.no-js)) {
+  color-scheme: light dark;
+}
+
+.grid {
+  display: grid;
+  grid-template-areas:
+    "header header"
+    "side   main";
+  grid-template-columns: minmax(12rem, 1fr) 3fr;
+}
+
+a[href^="https://"]:not(.internal)::after {
+  content: " \2197";
+}
+
+.quote::before {
+  content: "\201C";
+}
+
+.emoji::after {
+  content: "→ ✨ naïve café";
+}
+
+@supports (display: grid) and (not (display: inline-grid)) {
+  .fallback {
+    display: grid;
+  }
+}
+
+@media screen and (min-width: 40em), print {
+  .responsive {
+    font-size: clamp(1rem, 2.5vw, 1.5rem);
+  }
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/inter.woff2") format("woff2");
+  font-display: swap;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slide {
+  0% {
+    transform: translateX(0);
+  }
+
+  50%,
+  75% {
+    transform: translateX(10px);
+  }
+
+  100% {
+    transform: translateX(0);
+  }
+}
+
+.animated {
+  animation: fade-in 0.3s ease-in-out both, slide 1s linear infinite;
+}
+
+@page :first {
+  margin: 1in;
+}
+
+.important {
+  color: red !important;
+  background: url(data:image/svg+xml;base64,PHN2Zy8+) no-repeat;
+}
+
+@layer base, components, utilities;
+
+@container card (min-width: 400px) {
+  .card-title {
+    font-size: 1.5rem;
+  }
+}

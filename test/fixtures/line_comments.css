@@ -1,0 +1,11 @@
+// css-in-js habit: line comments at the top level
+.button {
+  // the brand colour
+  color: #4f46e5;
+  padding: 8px 16px; // horizontal breathing room
+}
+
+// A whole section commented out below
+.legacy {
+  border: 1px solid #ccc;
+}
