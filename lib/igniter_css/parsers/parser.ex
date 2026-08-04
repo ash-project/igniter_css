@@ -10,18 +10,14 @@ defmodule IgniterCss.Parsers.Parser do
   Every function accepts either CSS content or a file path, selected by the
   trailing `type` argument (`:content`, the default, or `:path`).
 
-  This module covers the same ground the previous Python/tinycss2 implementation
-  did, reimplemented on the Rust parser. Two differences are worth knowing:
-
-  * The mutating functions here are now **diff-minimal** — they patch byte
-    ranges instead of reprinting the stylesheet, so comments and formatting
-    outside the edit are preserved exactly.
-  * `minify/2` and `beautify/2` still rewrite the whole file, because that is
-    what they are for. Do not use them to patch a file a user maintains.
+  The mutating functions are **diff-minimal**: they patch byte ranges rather
+  than reprinting the stylesheet, so comments and formatting outside the edit
+  are preserved exactly. `minify/2` and `beautify/2` are the exception — they
+  rewrite the whole file, because that is what they are for. Do not point them
+  at a file a user maintains.
 
   For new code prefer `IgniterCss`, which has a plainer `{:ok, result}` shape
-  and clearer option handling. This module exists so existing call sites keep
-  working.
+  and clearer option handling.
   """
 
   import IgniterCss.Helpers, only: [call_nif_fn: 4]

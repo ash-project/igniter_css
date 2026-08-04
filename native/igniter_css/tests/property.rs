@@ -137,7 +137,7 @@ fn junk() -> impl Strategy<Value = String> {
 // ---------------------------------------------------------------------------
 
 proptest! {
-    /// The Phase 0 gate, generalised: the parse must reproduce any input.
+    /// The round-trip gate, generalised: the parse must reproduce any input.
     #[test]
     fn round_trip_holds_for_generated_stylesheets(src in stylesheet()) {
         let ctx = ParseCtx::parse_default(&src);

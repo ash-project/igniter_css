@@ -199,7 +199,7 @@ pub fn ensure_rule_with(
     })
 }
 
-/// Remove a top-level rule and the comments it owns (rule D).
+/// Remove a top-level rule and the comments it owns. See [`crate::trivia`].
 pub fn remove_rule(source: &str, selector: &str, options: ParseOptions) -> Result<Outcome> {
     let want = normalize_selector(selector);
     if want.is_empty() {
@@ -285,7 +285,7 @@ pub fn append_raw_to_rule(
                 "no top-level rule with selector {selector:?}"
             )));
         };
-        // Already present verbatim? Then this is a no-op (rule A).
+        // Already present verbatim? Then this is a no-op.
         let body = &ctx.source()[rule.body_open..rule.body_close];
         let needle = raw.trim();
         if body.contains(needle) {

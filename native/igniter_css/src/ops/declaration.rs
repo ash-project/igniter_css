@@ -90,7 +90,7 @@ fn check_property_and_value(property: &str, value: &str) -> Result<(String, Stri
 /// Update `property` inside the rule matching `selector`, or append it.
 ///
 /// When the property is already present only its **value** bytes are replaced
-/// (rule E), so an inline comment on that line and any `!important` the caller
+/// so an inline comment on that line and any `!important` the caller
 /// did not ask to change both survive untouched.
 pub fn set_declaration(
     source: &str,
@@ -153,7 +153,7 @@ pub fn set_declaration(
 }
 
 /// Remove every declaration of `property` from the rule matching `selector`,
-/// together with the comments those declarations own (rule D).
+/// together with the comments those declarations own. See [`crate::trivia`].
 pub fn remove_declaration(
     source: &str,
     selector: &str,
@@ -187,7 +187,7 @@ pub fn remove_declaration(
 /// Each prefixed declaration is inserted immediately **before** the unprefixed
 /// one, which is the ordering browsers expect: the standard property wins.
 /// Prefixes already present in the same block are skipped, so re-running the op
-/// is a no-op (rule A).
+/// is a no-op.
 pub fn add_vendor_prefixes(
     source: &str,
     property: &str,

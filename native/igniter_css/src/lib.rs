@@ -11,7 +11,7 @@
 //!
 //! * [`ctx`] -- the source, its parse, and the file's own formatting habits
 //! * [`locate`] -- typed CST queries that return byte ranges
-//! * [`trivia`] -- which comments a deleted node owns (rule D)
+//! * [`trivia`] -- which comments a deleted node owns
 //! * [`edit`] -- overlap-checked text splicing
 //! * [`ops`] -- the codemods, all diff-minimal and idempotent
 //! * [`analyze`] -- read-only queries

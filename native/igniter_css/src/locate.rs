@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Phase 2: typed queries over the CST that return **byte ranges**, never owned
+//! Typed queries over the CST that return **byte ranges**, never owned
 //! strings to be reprinted.
 //!
 //! Matching rules are deliberately strict:
@@ -10,8 +10,7 @@
 //!   * selectors compared on a normalised form, never raw equality and never
 //!     substring/fuzzy;
 //!   * more than one match is `MatchResult::Ambiguous` -- we error, we do not
-//!     pick one. Guessing here is how the Python version produced surprising
-//!     diffs (R4).
+//!     pick one, because guessing produces surprising diffs.
 
 use crate::ctx::{is_bogus, ParseCtx};
 use biome_css_syntax::{CssSyntaxKind, CssSyntaxNode};
@@ -88,7 +87,7 @@ pub struct DeclRef {
     /// End of the declaration's own bytes, semicolon included when present.
     pub end: usize,
     /// Range of the value alone -- the only bytes `set_declaration` replaces
-    /// when the property already exists (rule E).
+    /// when the property already exists.
     pub value_start: usize,
     pub value_end: usize,
     /// Range of the `!important` flag, when present.
@@ -139,7 +138,7 @@ fn trimmed(node: &CssSyntaxNode) -> (usize, usize) {
 }
 
 /// A child node that opens with `{`. Kind-agnostic on purpose: CSS has a dozen
-/// block kinds and new ones appear between Biome releases (R2).
+/// block kinds and new ones appear between Biome releases.
 fn block_child(node: &CssSyntaxNode) -> Option<CssSyntaxNode> {
     node.children().find(|c| {
         c.first_token()
@@ -451,7 +450,7 @@ fn decl_ref_from(node: &CssSyntaxNode, ctx: &ParseCtx) -> Option<DeclRef> {
 
     // The value is everything after the `:` that is not the `!important` flag,
     // so replacing this range alone preserves both the flag and any inline
-    // comment sitting on the declaration (rule E).
+    // comment sitting on the declaration.
     let value_node = property_node.children().nth(1);
     let (value_start, value_end) = match value_node {
         Some(v) => range_to_pair(v.text_trimmed_range()),
@@ -797,9 +796,8 @@ mod tests {
     #[test]
     fn a_plus_inside_a_functional_pseudo_is_not_a_combinator() {
         // Both spellings denote the same selector, and reading the CST rather
-        // than the text makes them agree -- the old text scanner kept them
-        // distinct, which meant `:nth-child(2n + 1)` could not be matched by
-        // `:nth-child(2n+1)`.
+        // than the text makes them agree, so either spelling matches the
+        // other.
         assert_eq!(
             normalize_selector("li:nth-child(2n + 1)"),
             "li:nth-child(2n+1)"

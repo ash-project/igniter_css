@@ -7,7 +7,7 @@
 //! text the user already wrote.
 //!
 //! This module and `locate` are the only two places allowed to name Biome
-//! types. Isolating them here is the mitigation for R2 (Biome API churn).
+//! types, so an upgrade touches two files rather than twenty.
 
 use biome_css_parser::{parse_css, CssParse, CssParserOptions};
 use biome_css_syntax::{CssSyntaxKind, CssSyntaxNode};
@@ -130,8 +130,8 @@ impl ParseCtx {
 
     /// The parse is lossless by construction, but assert it before we let any
     /// codemod compute offsets against it. If this ever fails, the byte-range
-    /// design's foundation is gone and we must refuse to patch (hard constraint
-    /// #4: never destroy input).
+    /// design's foundation is gone and we must refuse to patch rather than
+    /// risk destroying the input.
     pub fn round_trips(&self) -> bool {
         self.parse.syntax().to_string() == self.source
     }
@@ -174,7 +174,7 @@ impl ParseCtx {
     /// Checked against the token stream, so braces inside strings and comments
     /// do not count. An unbalanced file cannot be patched safely: text inserted
     /// "at the top level" would land inside somebody's unterminated block, and
-    /// hard constraint #4 says a wrong patch is far worse than no patch.
+    /// a wrong patch is far worse than no patch.
     pub fn braces_are_balanced(&self) -> bool {
         let mut depth = 0i32;
         for token in self
@@ -220,7 +220,7 @@ impl ParseCtx {
     }
 
     /// Leading whitespace of the line containing `offset` -- the indentation to
-    /// copy when inserting a sibling next to it (rule B).
+    /// copy when inserting a sibling next to it.
     pub fn indent_at(&self, offset: usize) -> &str {
         let start = self.line_start(offset);
         let line = &self.source[start..];

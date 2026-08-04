@@ -7,12 +7,12 @@
 //! for.
 //!
 //! 1. idempotency -- applying twice equals applying once, and the second run
-//!    reports `changed: false` (§9.3)
-//! 2. comment preservation -- no comment is ever lost (§2 constraint 1)
-//! 3. diff minimality -- the changed-line count stays within budget (§9.4)
+//!    reports `changed: false`
+//! 2. comment preservation -- no comment is ever lost
+//! 3. diff minimality -- the changed-line count stays within budget
 //! 4. output validity -- the result still round-trips and gains no new parse
 //!    errors
-//! 5. malformed input -- an error is returned and the source is untouched (§9.5)
+//! 5. malformed input -- an error is returned and the source is untouched
 
 mod support;
 
@@ -87,7 +87,8 @@ fn ops() -> Vec<Op> {
         // `.page { display: flex; /* trailing on a declaration */ }` in the
         // comments fixture: this is the only op that takes the *update* branch
         // on a declaration that already carries a trailing comment, so without
-        // it the sweep never exercises rule E against a real comment.
+        // it the sweep never exercises value-only replacement against a
+        // real comment.
         ("set_declaration_over_a_commented_line", |s| {
             set_declaration(
                 s,
@@ -168,7 +169,7 @@ fn no_op_ever_loses_a_comment() {
             continue;
         }
         for (op_name, op) in ops() {
-            // Removal ops delete comments on purpose (rule D); they are covered
+            // Removal ops delete comments on purpose; they are covered
             // by their own targeted tests.
             if op_name.starts_with("remove_") {
                 continue;
@@ -256,7 +257,7 @@ fn an_unchanged_outcome_returns_the_source_byte_for_byte() {
     }
 }
 
-/// §9.4: a codemod touching one thing must not reformat the file around it.
+/// A codemod touching one thing must not reformat the file around it.
 #[test]
 fn single_target_ops_change_only_a_handful_of_lines() {
     // (op, budget in changed lines). Generous, but far below "whole file".
@@ -310,7 +311,7 @@ fn single_target_ops_change_only_a_handful_of_lines() {
     }
 }
 
-/// §9.5: input we cannot understand well enough to patch must come back
+/// Input we cannot understand well enough to patch must come back
 /// untouched, with an error, never half-edited.
 #[test]
 fn malformed_input_is_never_half_edited() {

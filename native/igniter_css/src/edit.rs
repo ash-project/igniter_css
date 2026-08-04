@@ -56,7 +56,7 @@ impl Edit {
 ///
 /// * Overlapping ranges are a hard error -- we never silently merge them.
 /// * Edits are applied back-to-front so earlier offsets stay valid.
-/// * `apply_edits(src, vec![])` returns `src` byte for byte (Phase 1 acceptance).
+/// * `apply_edits(src, vec![])` returns `src` byte for byte.
 pub fn apply_edits(source: &str, mut edits: Vec<Edit>) -> Result<String> {
     if edits.is_empty() {
         return Ok(source.to_string());

@@ -6,7 +6,7 @@
 //! `@custom-variant` and friends.
 //!
 //! For these, the grammar barely matters: what we need is an *anchor offset*,
-//! and even a bogus node provides one (R1, mitigation 3).
+//! and even a node Biome could not parse still provides one.
 
 use crate::ctx::{ParseCtx, ParseOptions};
 use crate::edit::Edit;
