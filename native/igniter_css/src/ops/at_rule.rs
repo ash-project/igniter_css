@@ -60,6 +60,7 @@ pub fn parse_at_rule_spec(line: &str) -> Result<AtRuleSpec> {
         )));
     }
     validate_snippet(trimmed, "at-rule line")?;
+    crate::ctx::check_nesting(trimmed)?;
 
     let has_block = trimmed.contains('{');
     let text = if has_block || trimmed.ends_with(';') {

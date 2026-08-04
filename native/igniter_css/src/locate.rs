@@ -271,6 +271,9 @@ pub fn normalize_selector(input: &str) -> String {
     if trimmed.is_empty() {
         return String::new();
     }
+    if crate::ctx::check_nesting(trimmed).is_err() {
+        return trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+    }
     let probe = format!("{trimmed} {{}}");
     let parse = biome_css_parser::parse_css(&probe, biome_css_parser::CssParserOptions::default());
     let selector_list = parse

@@ -308,6 +308,9 @@ pub fn value_has_color(value: &str) -> bool {
     if value.trim().is_empty() {
         return false;
     }
+    if crate::ctx::check_nesting(value).is_err() {
+        return false;
+    }
     let probe = format!("a{{b:{value}}}");
     let parse = biome_css_parser::parse_css(&probe, biome_css_parser::CssParserOptions::default());
     parse
@@ -568,6 +571,14 @@ pub struct Validation {
 /// raised no errors. The round-trip half is the one that actually matters for
 /// safety -- it is what every codemod checks before touching a file.
 pub fn validate(source: &str, options: ParseOptions) -> Validation {
+    if let Err(e) = crate::ctx::check_nesting(source) {
+        return Validation {
+            valid: false,
+            diagnostics: 0,
+            round_trips: false,
+            message: e.to_string(),
+        };
+    }
     let ctx = ParseCtx::new(source, options);
     let round_trips = ctx.round_trips();
     let diagnostics = ctx.diagnostics_count();

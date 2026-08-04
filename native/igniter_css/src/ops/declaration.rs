@@ -101,6 +101,7 @@ pub fn set_declaration(
     options: ParseOptions,
 ) -> Result<Outcome> {
     let (property, value) = check_property_and_value(property, value)?;
+    validate_snippet(selector, "selector")?;
 
     run(source, options, |ctx| {
         let Some(rule) = resolve_rule(ctx, selector)? else {

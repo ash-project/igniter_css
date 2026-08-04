@@ -55,6 +55,7 @@ pub fn run<F>(source: &str, options: ParseOptions, build: F) -> Result<Outcome>
 where
     F: FnOnce(&ParseCtx) -> Result<Vec<Edit>>,
 {
+    crate::ctx::check_nesting(source)?;
     let ctx = ParseCtx::new(source, options);
     if !ctx.round_trips() {
         return Err(CssError::Unparseable(
@@ -89,6 +90,7 @@ pub fn query<T, F>(source: &str, options: ParseOptions, f: F) -> Result<T>
 where
     F: FnOnce(&ParseCtx) -> Result<T>,
 {
+    crate::ctx::check_nesting(source)?;
     let ctx = ParseCtx::new(source, options);
     if !ctx.round_trips() {
         return Err(CssError::Unparseable(
@@ -179,6 +181,11 @@ pub fn ends_with_semicolon(text: &str) -> bool {
 /// Cheap structural guard, not a full validation: we re-parse the result
 /// anyway, but catching an unbalanced brace here gives a far better error.
 pub fn validate_snippet(text: &str, what: &str) -> Result<()> {
+    // Text spliced into a file has to satisfy the reader's nesting limit too,
+    // or we would write something we then refuse to parse.
+    crate::ctx::check_nesting(text)
+        .map_err(|_| CssError::InvalidInput(format!("{what} is nested too deeply")))?;
+
     let mut depth = 0i32;
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {

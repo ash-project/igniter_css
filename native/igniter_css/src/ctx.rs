@@ -15,6 +15,67 @@ use biome_rowan::TextRange;
 
 pub const BOM: &str = "\u{feff}";
 
+/// Maximum nesting we are willing to hand to the parser.
+///
+/// Biome's CSS parser is recursive descent and rowan's tree drop recurses too,
+/// so deeply nested input overflows the stack. That is an abort, not a panic:
+/// `catch_unwind` cannot intercept it, and inside a NIF it would take the whole
+/// VM down rather than raise in the calling process.
+///
+/// Measured on a 2 MB test-thread stack, both `{` nesting and `:not(` nesting
+/// survive 1000 levels and abort at 2000. A BEAM dirty scheduler thread may
+/// have less, so this sits an order of magnitude below the observed failure --
+/// and still far above real CSS, which rarely exceeds ten.
+pub const MAX_NESTING_DEPTH: usize = 256;
+
+/// Deepest `{` or `(` nesting in `source`, ignoring strings and comments.
+///
+/// A plain byte scan: it must be cheap and, above all, must not itself recurse.
+pub fn nesting_depth(source: &str) -> usize {
+    let bytes = source.as_bytes();
+    let (mut depth, mut max) = (0usize, 0usize);
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' | b'\'' => {
+                let quote = bytes[i];
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'{' | b'(' => {
+                depth += 1;
+                max = max.max(depth);
+            }
+            b'}' | b')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        i += 1;
+    }
+    max
+}
+
+/// Refuse input nested deeply enough to risk a stack overflow in the parser.
+pub fn check_nesting(source: &str) -> crate::error::Result<()> {
+    let depth = nesting_depth(source);
+    if depth > MAX_NESTING_DEPTH {
+        return Err(crate::error::CssError::Unparseable(format!(
+            "nested {depth} levels deep, limit is {MAX_NESTING_DEPTH}; \
+             refusing to parse input that could overflow the stack"
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Newline {
     Lf,
