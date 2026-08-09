@@ -55,6 +55,20 @@ defmodule IgniterCss.Codemods do
       end)
     end
 
+    @doc "See `IgniterCss.add_import/4`."
+    def add_import(igniter, path, url, media \\ nil, opts \\ []) do
+      update(igniter, path, "add_import #{inspect(url)}", fn source ->
+        IgniterCss.add_import(source, url, media, opts)
+      end)
+    end
+
+    @doc "See `IgniterCss.remove_import/3`."
+    def remove_import(igniter, path, url, opts \\ []) do
+      update(igniter, path, "remove_import #{inspect(url)}", fn source ->
+        IgniterCss.remove_import(source, url, opts)
+      end)
+    end
+
     @doc "See `IgniterCss.ensure_rule/4`."
     def ensure_rule(igniter, path, selector, declarations \\ "", opts \\ []) do
       update(igniter, path, "ensure_rule #{inspect(selector)}", fn source ->
@@ -124,6 +138,8 @@ defmodule IgniterCss.Codemods do
     for {name, arity} <- [
           ensure_at_rule: 4,
           remove_at_rule: 5,
+          add_import: 5,
+          remove_import: 4,
           ensure_rule: 5,
           remove_rule: 4,
           set_declaration: 6,

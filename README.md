@@ -111,7 +111,8 @@ Callers get Igniter's normal diff preview and confirmation flow.
 | `sort_properties/2`, `remove_duplicates/2` | tidying, by moving and deleting whole lines |
 
 **Queries** — read-only: `has_rule?/3`, `has_declaration?/4`, `has_at_rule?/3`,
-`get_declaration/4`, `get_rule_declarations/3`, `list_selectors/2`, `analyze/2`,
+`get_declaration/4`, `get_rule_declarations/3`, `get_at_rules/4`,
+`list_selectors/2`, `analyze/2`,
 `validate/2`, `extract_colors/2`, `extract_media_queries/2`,
 `extract_animations/2`.
 

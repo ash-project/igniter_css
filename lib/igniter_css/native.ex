@@ -28,9 +28,13 @@ defmodule IgniterCss.Native do
         x86_64-unknown-linux-gnu
         x86_64-unknown-linux-musl
       ),
+    # `rustler_precompiled`'s own documented switch. Without this the env var above is the
+    # only way in, and a consuming project — which has no reason to know this library's
+    # private variable name — cannot force a source build the standard way.
     force_build:
       System.get_env("IGNITERCSS_BUILD") in ["1", "true"] ||
-        System.get_env("ASH_CI_BUILD") in ["1", "true"]
+        System.get_env("ASH_CI_BUILD") in ["1", "true"] ||
+        Application.compile_env(:rustler_precompiled, [:force_build, :igniter_css], false)
 
   # -- at-rules ---------------------------------------------------------------
 
@@ -76,6 +80,7 @@ defmodule IgniterCss.Native do
   # -- analysis ---------------------------------------------------------------
 
   def analyze_nif(_source, _opts), do: error()
+  def get_at_rules_nif(_source, _name, _matching, _opts), do: error()
   def validate_nif(_source, _opts), do: error()
   def extract_colors_nif(_source, _opts), do: error()
   def extract_media_queries_nif(_source, _opts), do: error()

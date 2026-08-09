@@ -33,6 +33,7 @@ rustler::atoms! {
     remove_duplicates_nif,
 
     analyze_nif,
+    get_at_rules_nif,
     validate_nif,
     extract_colors_nif,
     extract_media_queries_nif,

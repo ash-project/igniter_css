@@ -27,6 +27,69 @@ defmodule IgniterCss.CodemodsTest do
     |> Rewrite.Source.get(:content)
   end
 
+  describe "add_import/5 and remove_import/4" do
+    test "adds an import through Igniter, so the change is in the diff" do
+      result =
+        ~s|@import "tailwindcss";\n|
+        |> igniter_with()
+        |> Codemods.add_import(@path, "../vendor/app.css")
+        |> content()
+
+      assert result == ~s|@import "tailwindcss";\n@import "../vendor/app.css";\n|
+    end
+
+    test "re-adding the same import leaves the file untouched" do
+      source = ~s|@import "tailwindcss";\n@import "../vendor/app.css";\n|
+
+      result =
+        source
+        |> igniter_with()
+        |> Codemods.add_import(@path, "../vendor/app.css")
+        |> content()
+
+      assert result == source
+    end
+
+    test "an import lands after the prologue and keeps surrounding comments" do
+      result =
+        ~s|/* app styles */\n@import "tailwindcss";\n\n.btn {\n  color: red;\n}\n|
+        |> igniter_with()
+        |> Codemods.add_import(@path, "../vendor/app.css")
+        |> content()
+
+      assert result =~ "/* app styles */"
+      assert result =~ ".btn {\n  color: red;\n}"
+
+      {tailwind, _} = :binary.match(result, "tailwindcss")
+      {vendor, _} = :binary.match(result, "../vendor/app.css")
+      assert tailwind < vendor
+    end
+
+    test "removing an import takes only that line" do
+      result =
+        ~s|@import "tailwindcss";\n@import "../vendor/app.css";\n\n.btn {\n  color: red;\n}\n|
+        |> igniter_with()
+        |> Codemods.remove_import(@path, "../vendor/app.css")
+        |> content()
+
+      refute result =~ "../vendor/app.css"
+      assert result =~ "tailwindcss"
+      assert result =~ ".btn {\n  color: red;\n}"
+    end
+
+    test "removing an import that is not there changes nothing" do
+      source = ~s|@import "tailwindcss";\n|
+
+      result =
+        source
+        |> igniter_with()
+        |> Codemods.remove_import(@path, "../vendor/nope.css")
+        |> content()
+
+      assert result == source
+    end
+  end
+
   describe "ensure_at_rule/4" do
     test "adds the at-rule to the file" do
       result =

@@ -338,6 +338,40 @@ defmodule IgniterCss.Parsers.Parser do
   # ---------------------------------------------------------------------------
 
   @doc """
+  Every top-level at-rule named `name`, as string-keyed maps.
+
+  ## Examples
+
+      iex> css = ~s|@plugin "daisyui" { prefix: "d-"; }|
+      iex> {:ok, _, [rule]} = IgniterCss.Parsers.Parser.get_at_rules(css, "plugin", "daisyui")
+      iex> rule["declarations"]
+      [{"prefix", ~s|"d-"|}]
+  """
+  @spec get_at_rules(String.t(), String.t(), String.t() | nil, type()) ::
+          {:ok, atom(), [map()]} | {:error, atom(), String.t()}
+  def get_at_rules(file_path_or_content, name, matching \\ nil, type \\ :content) do
+    call_nif_fn(
+      file_path_or_content,
+      __ENV__.function,
+      fn content ->
+        case Native.get_at_rules_nif(content, name, matching, ParseOpts.new([])) do
+          {:ok, fun, rules} ->
+            {:ok, fun,
+             Enum.map(rules, fn rule ->
+               rule
+               |> Map.from_struct()
+               |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+             end)}
+
+          other ->
+            other
+        end
+      end,
+      type
+    )
+  end
+
+  @doc """
   Statistics about a stylesheet, as a string-keyed map.
 
   ## Examples

@@ -129,6 +129,29 @@ defmodule IgniterCss do
   end
 
   @doc """
+  Every top-level at-rule named `name`, as `IgniterCss.AtRule` structs.
+
+  Pass `matching` to narrow to a single target — the string or `url()` before
+  the block. Returns `[]` when nothing matches; absence is an answer, not an
+  error.
+
+  Unlike `has_at_rule?/3`, this hands back the at-rule's block, so a caller can
+  read a decision out of it rather than only confirm the line exists:
+
+      iex> css = ~s|@plugin "daisyui" { prefix: "d-"; }|
+      iex> {:ok, [rule]} = IgniterCss.get_at_rules(css, "plugin", "daisyui")
+      iex> rule.declarations
+      [{"prefix", ~s|"d-"|}]
+
+  The leading `@` in `name` is optional.
+  """
+  @spec get_at_rules(String.t(), String.t(), String.t() | nil, opts()) ::
+          {:ok, [IgniterCss.AtRule.t()]} | {:error, String.t()}
+  def get_at_rules(source, name, matching \\ nil, opts \\ []) do
+    Native.get_at_rules_nif(source, name, matching, ParseOpts.new(opts)) |> unwrap()
+  end
+
+  @doc """
   Add an `@import`, building the line for you.
 
   Absolute URLs are wrapped in `url(...)`; relative paths are quoted.
