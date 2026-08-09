@@ -722,7 +722,9 @@ mod tests {
     #[test]
     fn narrows_by_target_and_returns_every_match_without_one() {
         assert_eq!(
-            get_at_rules(TAILWIND, "plugin", None, opts()).unwrap().len(),
+            get_at_rules(TAILWIND, "plugin", None, opts())
+                .unwrap()
+                .len(),
             2
         );
         assert!(get_at_rules(TAILWIND, "plugin", Some("nope"), opts())
@@ -751,7 +753,9 @@ mod tests {
     fn reports_the_at_rule_text_verbatim_comments_included() {
         let found = get_at_rules(TAILWIND, "plugin", Some("daisyui"), opts()).unwrap();
         assert!(found[0].text.starts_with("@plugin \"daisyui\" {"));
-        assert!(found[0].text.contains("/* keeps daisyUI off our own .btn */"));
+        assert!(found[0]
+            .text
+            .contains("/* keeps daisyUI off our own .btn */"));
     }
 
     #[test]
