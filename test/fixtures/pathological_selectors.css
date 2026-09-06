@@ -1,0 +1,74 @@
+/* SPDX-FileCopyrightText: 2025 igniter_css contributors <https://github.com/ash-project/igniter_css/graphs/contributors>
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+a:hover,
+a:focus-visible::before,
+a::after {
+  content: "a:b";
+  color: red;
+}
+
+.card:not([data-open]) .body,
+.card:not(:hover, :focus-within) > .footer {
+  display: none;
+}
+
+li:nth-child(2n + 1):not(:last-child) {
+  margin-block: 0;
+}
+
+input[type="text"]:not([disabled]):focus,
+input[placeholder="a:b, c{d}"] {
+  outline: 2px solid;
+}
+
+:root:has(> .theme-dark) .panel:where(.a, .b):is(:hover, :focus) {
+  --shadow: 0 1px rgb(0 0 0 / 10%);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3C/svg%3E");
+}
+
+@media (min-width: 40rem) and (max-width: 80rem) {
+  .grid:not(.plain) {
+    grid-template-areas:
+      "head head"
+      "side main";
+    grid-template-columns: minmax(min-content, 12rem) 1fr;
+  }
+}
+
+@supports (display: grid) and (not (display: inline-grid)) {
+  .x::selection {
+    color: white !important;
+  }
+}
+
+@layer base, components;
+
+@layer components {
+  .btn:active:not(:disabled) {
+    transition: color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+}
+
+@keyframes spin {
+  from {
+    rotate: 0deg;
+  }
+
+  to {
+    rotate: 360deg;
+  }
+}
+
+@font-face {
+  font-family: "X:Y";
+  src: url(fonts/x.woff2) format("woff2");
+}
+
+.escaped\:colon,
+.a\/b,
+#id\.with\.dots {
+  padding: calc(1rem + var(--x, 2px) * 2);
+}
