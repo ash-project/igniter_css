@@ -106,6 +106,26 @@ defmodule IgniterCss do
   end
 
   @doc """
+  Give the top-level at-rule `name` this block, replacing an existing body or
+  inserting the whole rule when there is none.
+
+  `declarations` is spliced in verbatim, re-indented to the file. `matching`
+  narrows to one target the way `remove_at_rule/4` does, and is carried into the
+  prelude.
+
+      iex> css = ~s|@import "tailwindcss";\\n|
+      iex> {:ok, out} = IgniterCss.ensure_at_rule_block(css, "theme", nil, "--color-a: red;")
+      iex> out.source
+      ~s|@import "tailwindcss";\\n@theme {\\n  --color-a: red;\\n}\\n|
+  """
+  @spec ensure_at_rule_block(String.t(), String.t(), String.t() | nil, String.t(), opts()) ::
+          result()
+  def ensure_at_rule_block(source, name, matching \\ nil, declarations, opts \\ []) do
+    Native.ensure_at_rule_block_nif(source, name, matching, declarations, ParseOpts.new(opts))
+    |> unwrap()
+  end
+
+  @doc """
   Remove top-level at-rules of `name`.
 
   `matching` filters by target (or, failing that, by the whole prelude); `nil`
@@ -126,6 +146,29 @@ defmodule IgniterCss do
   @spec has_at_rule?(String.t(), String.t(), opts()) :: {:ok, boolean()} | {:error, String.t()}
   def has_at_rule?(source, line, opts \\ []) do
     Native.has_at_rule_nif(source, line, ParseOpts.new(opts)) |> unwrap()
+  end
+
+  @doc """
+  Every top-level at-rule named `name`, as `IgniterCss.AtRule` structs.
+
+  Pass `matching` to narrow to a single target — the string or `url()` before
+  the block. Returns `[]` when nothing matches; absence is an answer, not an
+  error.
+
+  Unlike `has_at_rule?/3`, this hands back the at-rule's block, so a caller can
+  read a decision out of it rather than only confirm the line exists:
+
+      iex> css = ~s|@plugin "daisyui" { prefix: "d-"; }|
+      iex> {:ok, [rule]} = IgniterCss.get_at_rules(css, "plugin", "daisyui")
+      iex> rule.declarations
+      [{"prefix", ~s|"d-"|}]
+
+  The leading `@` in `name` is optional.
+  """
+  @spec get_at_rules(String.t(), String.t(), String.t() | nil, opts()) ::
+          {:ok, [IgniterCss.AtRule.t()]} | {:error, String.t()}
+  def get_at_rules(source, name, matching \\ nil, opts \\ []) do
+    Native.get_at_rules_nif(source, name, matching, ParseOpts.new(opts)) |> unwrap()
   end
 
   @doc """

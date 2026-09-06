@@ -12,6 +12,7 @@
 use biome_css_parser::{parse_css, CssParse, CssParserOptions};
 use biome_css_syntax::{CssSyntaxKind, CssSyntaxNode};
 use biome_rowan::TextRange;
+use std::collections::BTreeMap;
 
 pub const BOM: &str = "\u{feff}";
 
@@ -365,11 +366,16 @@ fn detect_indent(source: &str) -> String {
         return "\t".to_string();
     }
 
-    // The smallest indentation width present is one level.
-    match widths.iter().copied().min() {
-        Some(n) if n > 0 => " ".repeat(n),
-        _ => "  ".to_string(),
+    let mut counts: BTreeMap<usize, usize> = BTreeMap::new();
+    for w in widths {
+        *counts.entry(w).or_default() += 1;
     }
+
+    counts
+        .into_iter()
+        .max_by_key(|&(width, count)| (count, std::cmp::Reverse(width)))
+        .map(|(width, _)| " ".repeat(width))
+        .unwrap_or_else(|| "  ".to_string())
 }
 
 /// True for the kinds that make up a comment trivia piece.
@@ -449,6 +455,31 @@ mod tests {
     fn nested_indentation_still_reports_one_level() {
         let src = "@media (min-width: 1px) {\n  .a {\n    color: red;\n  }\n}\n";
         assert_eq!(detect_indent(src), "  ");
+    }
+
+    #[test]
+    fn a_stray_shallow_line_does_not_decide_the_width() {
+        let src = concat!(
+            ".a {\n",
+            "    color: red;\n",
+            "    margin: 0;\n",
+            "    padding: 0;\n",
+            "}\n",
+            "@media (min-width: 1px) {\n",
+            "  .b {\n",
+            "    color: blue;\n",
+            "  }\n",
+            "}\n"
+        );
+        assert_eq!(detect_indent(src), "    ");
+    }
+
+    #[test]
+    fn a_tie_prefers_the_shallower_width() {
+        assert_eq!(
+            detect_indent(".a {\n  x: 1;\n}\n.b {\n    y: 2;\n}\n"),
+            "  "
+        );
     }
 
     #[test]

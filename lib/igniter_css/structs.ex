@@ -123,6 +123,39 @@ defmodule IgniterCss.Validation do
   defstruct valid: false, diagnostics: 0, round_trips: false, message: ""
 end
 
+defmodule IgniterCss.AtRule do
+  @moduledoc """
+  One at-rule, read back whole.
+
+  `IgniterCss.analyze/2` reports only that an at-rule of some name exists. This
+  reports which one and how it was configured — the difference between knowing a
+  `@plugin` is present and knowing it was loaded as
+  `@plugin "daisyui" { prefix: "d-"; }`, which is what an installer needs before
+  it can generate code that agrees with the user's setup.
+
+  `declarations` is empty for an at-rule with no block, or one whose block holds
+  rules rather than declarations.
+  """
+
+  @type t :: %__MODULE__{
+          name: String.t(),
+          prelude: String.t(),
+          target: String.t() | nil,
+          has_block: boolean(),
+          declarations: [{String.t(), String.t()}],
+          text: String.t(),
+          body: String.t() | nil
+        }
+
+  defstruct name: "",
+            prelude: "",
+            target: nil,
+            has_block: false,
+            declarations: [],
+            text: "",
+            body: nil
+end
+
 defmodule IgniterCss.Animation do
   @moduledoc """
   A `@keyframes` animation and the selectors that use it.

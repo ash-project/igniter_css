@@ -57,7 +57,10 @@ pub fn minify(source: &str, options: ParseOptions) -> Result<String> {
         let end = usize::from(token.text_trimmed_range().end());
 
         // Drop the semicolon that terminates the last declaration in a block.
-        if token.kind() == CssSyntaxKind::SEMICOLON {
+        // Only a declaration's: an at-rule statement such as `@apply x;` needs
+        // its terminator, or `}` has to end it and the rule stops parsing as
+        // one.
+        if token.kind() == CssSyntaxKind::SEMICOLON && terminates_declaration(token) {
             let next_is_close = tokens
                 .get(i + 1)
                 .is_some_and(|t| t.kind() == CssSyntaxKind::R_CURLY);
@@ -84,6 +87,40 @@ pub fn minify(source: &str, options: ParseOptions) -> Result<String> {
     }
 
     Ok(ctx.restore_bom(out))
+}
+
+/// Is this semicolon the one ending a declaration, rather than an at-rule
+/// statement?
+fn terminates_declaration(token: &biome_css_syntax::CssSyntaxToken) -> bool {
+    token.parent().is_some_and(|parent| {
+        matches!(parent.kind(), CssSyntaxKind::CSS_DECLARATION_WITH_SEMICOLON)
+    })
+}
+
+/// Is this colon the one introducing a pseudo-class or pseudo-element, rather
+/// than a declaration or a media feature?
+///
+/// Read from the node the token hangs off, so `:not(...)` in a selector and
+/// `color:` in a body are told apart by the grammar rather than by their
+/// surroundings.
+fn is_selector_colon(token: &biome_css_syntax::CssSyntaxToken) -> bool {
+    token.parent().is_some_and(|parent| {
+        matches!(
+            parent.kind(),
+            CssSyntaxKind::CSS_PSEUDO_CLASS_SELECTOR
+                | CssSyntaxKind::CSS_PSEUDO_ELEMENT_SELECTOR
+                | CssSyntaxKind::CSS_PSEUDO_CLASS_FUNCTION_SELECTOR
+                | CssSyntaxKind::CSS_PSEUDO_CLASS_FUNCTION_SELECTOR_LIST
+                | CssSyntaxKind::CSS_PSEUDO_CLASS_FUNCTION_IDENTIFIER
+                | CssSyntaxKind::CSS_PSEUDO_CLASS_FUNCTION_COMPOUND_SELECTOR
+                | CssSyntaxKind::CSS_PSEUDO_CLASS_FUNCTION_COMPOUND_SELECTOR_LIST
+                | CssSyntaxKind::CSS_PSEUDO_CLASS_FUNCTION_RELATIVE_SELECTOR_LIST
+                | CssSyntaxKind::CSS_PSEUDO_CLASS_FUNCTION_VALUE_LIST
+                | CssSyntaxKind::CSS_PSEUDO_CLASS_FUNCTION_NTH
+                | CssSyntaxKind::CSS_PSEUDO_ELEMENT_FUNCTION_SELECTOR
+                | CssSyntaxKind::CSS_PSEUDO_ELEMENT_FUNCTION_IDENTIFIER
+        )
+    })
 }
 
 /// Re-print the stylesheet with one declaration per line and consistent
@@ -222,7 +259,9 @@ pub fn beautify(source: &str, options: ParseOptions) -> Result<String> {
             }
             CssSyntaxKind::COLON => {
                 push(&mut out, &mut at_line_start, depth, ":");
-                out.push(' ');
+                if !is_selector_colon(token) {
+                    out.push(' ');
+                }
             }
             _ => {
                 if !at_line_start {
@@ -231,11 +270,8 @@ pub fn beautify(source: &str, options: ParseOptions) -> Result<String> {
                     let gap = prev_end
                         .and_then(|pe| ctx.source().get(pe..start))
                         .unwrap_or("");
-                    let needs_space = !last.is_whitespace()
-                        && ((!gap.is_empty()
-                            && is_word_char(last)
-                            && (is_word_char(first) || first == '('))
-                            || matches!(first, '{'));
+                    let separated = gap.chars().any(char::is_whitespace);
+                    let needs_space = !last.is_whitespace() && (separated || matches!(first, '{'));
                     if needs_space {
                         out.push(' ');
                     }
@@ -297,6 +333,99 @@ pub fn merge_stylesheets(sheets: &[String], options: ParseOptions) -> Result<Str
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_value_keeps_the_space_after_a_closing_paren() {
+        let out = beautify(
+            ".a{background:url(x.png) no-repeat}",
+            ParseOptions::default(),
+        )
+        .unwrap();
+        assert!(out.contains("url(x.png) no-repeat"), "got {out:?}");
+    }
+
+    #[test]
+    fn a_track_list_keeps_its_separators() {
+        let out = beautify(
+            ".a{grid-template-columns:minmax(12rem, 1fr) 3fr}",
+            ParseOptions::default(),
+        )
+        .unwrap();
+        assert!(out.contains("minmax(12rem, 1fr) 3fr"), "got {out:?}");
+    }
+
+    #[test]
+    fn adjacent_strings_stay_apart() {
+        let out = beautify(
+            ".a{grid-template-areas:\"head head\" \"side main\"}",
+            ParseOptions::default(),
+        )
+        .unwrap();
+        assert!(out.contains("\"head head\" \"side main\""), "got {out:?}");
+    }
+
+    #[test]
+    fn a_comment_inside_a_selector_keeps_its_gap() {
+        let out = beautify(".a, /* c */ .b{color:red}", ParseOptions::default()).unwrap();
+        assert!(out.contains("/* c */ .b"), "got {out:?}");
+    }
+
+    #[test]
+    fn minify_keeps_the_terminator_of_an_at_rule_statement() {
+        let out = minify(
+            ".typography { h1 { @apply text-2xl; } }\n",
+            ParseOptions::default(),
+        )
+        .unwrap();
+        assert!(out.contains("@apply text-2xl;"), "got {out:?}");
+    }
+
+    #[test]
+    fn minify_still_drops_the_last_declaration_semicolon() {
+        let out = minify(".a { color: red; }\n", ParseOptions::default()).unwrap();
+        assert_eq!(out, ".a{color:red}");
+    }
+
+    #[test]
+    fn a_nested_rule_survives_a_minify_beautify_round_trip() {
+        let src = ".typography { h1 { @apply text-2xl; } }\n";
+        let small = minify(src, ParseOptions::default()).unwrap();
+        let pretty = beautify(&small, ParseOptions::default()).unwrap();
+        assert!(pretty.contains(".typography"), "got {pretty:?}");
+        assert!(pretty.contains("h1"), "got {pretty:?}");
+        assert!(pretty.contains("@apply text-2xl"), "got {pretty:?}");
+    }
+
+    #[test]
+    fn a_pseudo_class_colon_keeps_its_selector_together() {
+        let out = beautify(".a:not([data-x]) .b{color:red}", ParseOptions::default()).unwrap();
+        assert!(out.contains(".a:not([data-x]) .b"), "got {out:?}");
+        assert!(!out.contains(": not("), "got {out:?}");
+    }
+
+    #[test]
+    fn a_pseudo_element_colon_survives() {
+        let out = beautify(".a::before{content:\"\"}", ParseOptions::default()).unwrap();
+        assert!(out.contains(".a::before"), "got {out:?}");
+    }
+
+    #[test]
+    fn a_nested_pseudo_class_survives() {
+        let out = beautify(".a:not(:hover){color:red}", ParseOptions::default()).unwrap();
+        assert!(out.contains(".a:not(:hover)"), "got {out:?}");
+    }
+
+    #[test]
+    fn a_declaration_colon_still_gets_its_space() {
+        let out = beautify(".a{color:red}", ParseOptions::default()).unwrap();
+        assert!(out.contains("color: red"), "got {out:?}");
+    }
+
+    #[test]
+    fn a_media_feature_colon_still_gets_its_space() {
+        let out = beautify("@media (min-width:1px){.a{top:0}}", ParseOptions::default()).unwrap();
+        assert!(out.contains("min-width: 1px"), "got {out:?}");
+    }
     use super::*;
 
     fn opts() -> ParseOptions {

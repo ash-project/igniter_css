@@ -14,7 +14,7 @@ use crate::error::{CssError, Result};
 use crate::locate::{
     find_at_rules_named, find_top_level_at_rules, top_level_nodes, top_of_file_anchor, AtRuleRef,
 };
-use crate::ops::{run, validate_snippet, Outcome};
+use crate::ops::{reindent, run, validate_snippet, Outcome};
 use crate::trivia::{absorb_surrounding_blank_line, comment_ranges, deletion_span};
 use biome_css_syntax::CssSyntaxKind;
 
@@ -255,6 +255,92 @@ pub fn remove_import(source: &str, url: &str, options: ParseOptions) -> Result<O
     remove_at_rule(source, "import", Some(url), options)
 }
 
+/// Render a block body, re-indented to the target but otherwise verbatim.
+fn render_block_body(ctx: &ParseCtx, body: &str, indent: &str, single_line: bool) -> String {
+    let nl = ctx.nl();
+    let content = body.trim_end().trim_start_matches(['\n', '\r']);
+    if content.trim().is_empty() {
+        return if single_line {
+            String::new()
+        } else {
+            format!("{nl}{indent}")
+        };
+    }
+    if single_line && !content.contains('\n') {
+        return format!(" {} ", content.trim());
+    }
+    let inner_indent = format!("{indent}{}", ctx.indent());
+    let inner = reindent(content, &inner_indent, nl);
+    format!("{nl}{inner}{nl}{indent}")
+}
+
+/// Give the top-level at-rule `name` this block, replacing an existing body or
+/// inserting the whole rule when there is none.
+///
+/// `matching` narrows to one target the way [`remove_at_rule`] does, and is
+/// carried into the inserted prelude.
+pub fn ensure_at_rule_block(
+    source: &str,
+    name: &str,
+    matching: Option<&str>,
+    declarations: &str,
+    options: ParseOptions,
+) -> Result<Outcome> {
+    let want_name = name.trim().trim_start_matches('@').trim().to_lowercase();
+    if want_name.is_empty() {
+        return Err(CssError::InvalidInput("at-rule name is empty".to_string()));
+    }
+    validate_snippet(declarations, "declarations")?;
+    let want = matching.map(normalize_target_needle);
+
+    let header = match matching.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => format!("@{want_name} {m}"),
+        None => format!("@{want_name}"),
+    };
+
+    run(source, options, |ctx| {
+        let existing = find_at_rules_named(ctx, &want_name)
+            .into_iter()
+            .find(|at| match &want {
+                None => true,
+                Some(w) => match &at.target {
+                    Some(target) => target == w,
+                    None => at.prelude_norm == *w,
+                },
+            });
+
+        if let Some(at) = existing {
+            let (Some(open), Some(close)) = (at.body_open, at.body_close) else {
+                return Err(CssError::InvalidInput(format!(
+                    "@{want_name} is present without a block; refusing to give it one"
+                )));
+            };
+            let indent = ctx.indent_at(at.start).to_string();
+            let single_line = !ctx.source()[at.start..at.end].contains('\n');
+            let replacement = render_block_body(ctx, declarations, &indent, single_line);
+            return Ok(vec![Edit::replace(open, close, replacement)]);
+        }
+
+        let spec = parse_at_rule_spec(&format!("{header} {{}}"))?;
+        let at = insertion_offset(ctx, &spec);
+        let nl = ctx.nl();
+        let indent = ctx.indent_at(at).to_string();
+        let block = format!(
+            "{header} {{{}}}",
+            render_block_body(ctx, declarations, &indent, false)
+        );
+
+        let text = if at == 0 {
+            format!("{block}{nl}")
+        } else if ctx.source()[..at].ends_with('\n') {
+            format!("{indent}{block}{nl}")
+        } else {
+            format!("{nl}{indent}{block}")
+        };
+        Ok(vec![Edit::insert(at, text)])
+    })
+}
+
 /// Read-only: is an equivalent at-rule already present?
 pub fn has_at_rule(source: &str, line: &str, options: ParseOptions) -> Result<bool> {
     let spec = parse_at_rule_spec(line)?;
@@ -275,6 +361,124 @@ mod tests {
 
     fn remove(src: &str, name: &str, matching: Option<&str>) -> Outcome {
         remove_at_rule(src, name, matching, ParseOptions::default()).unwrap()
+    }
+
+    fn ensure_block(src: &str, name: &str, matching: Option<&str>, decls: &str) -> Outcome {
+        ensure_at_rule_block(src, name, matching, decls, ParseOptions::default()).unwrap()
+    }
+
+    // -- block at-rules -----------------------------------------------------
+
+    #[test]
+    fn inserts_a_block_at_rule_when_absent() {
+        let out = ensure_block(
+            "@import \"tailwindcss\";\n",
+            "theme",
+            None,
+            "--color-a: red;",
+        );
+        assert!(out.changed);
+        assert_eq!(
+            out.source,
+            "@import \"tailwindcss\";\n@theme {\n  --color-a: red;\n}\n"
+        );
+    }
+
+    #[test]
+    fn replaces_the_body_of_an_existing_block_at_rule() {
+        let src = "@theme {\n  --color-a: red;\n}\n";
+        let out = ensure_block(src, "theme", None, "--color-b: blue;");
+        assert!(out.changed);
+        assert_eq!(out.source, "@theme {\n  --color-b: blue;\n}\n");
+    }
+
+    #[test]
+    fn replacing_a_block_at_rule_with_the_same_body_is_a_no_op() {
+        let src = "@theme {\n  --color-a: red;\n}\n";
+        let out = ensure_block(src, "theme", None, "--color-a: red;");
+        assert!(!out.changed);
+        assert_eq!(out.source, src);
+    }
+
+    #[test]
+    fn keeps_a_single_line_block_on_one_line() {
+        let out = ensure_block(
+            "@theme { --color-a: red; }\n",
+            "theme",
+            None,
+            "--color-b: blue;",
+        );
+        assert_eq!(out.source, "@theme { --color-b: blue; }\n");
+    }
+
+    #[test]
+    fn accepts_the_name_with_or_without_the_at_sign() {
+        let a = ensure_block("", "theme", None, "--a: 1;");
+        let b = ensure_block("", "@theme", None, "--a: 1;");
+        assert_eq!(a.source, b.source);
+    }
+
+    #[test]
+    fn narrows_to_a_matching_target() {
+        let src = "@plugin \"a\" {\n  x: 1;\n}\n@plugin \"b\" {\n  y: 2;\n}\n";
+        let out = ensure_block(src, "plugin", Some("\"b\""), "y: 3;");
+        assert_eq!(
+            out.source,
+            "@plugin \"a\" {\n  x: 1;\n}\n@plugin \"b\" {\n  y: 3;\n}\n"
+        );
+    }
+
+    #[test]
+    fn carries_matching_into_an_inserted_prelude() {
+        let out = ensure_block("", "plugin", Some("\"daisyui\""), "prefix: \"d-\";");
+        assert_eq!(out.source, "@plugin \"daisyui\" {\n  prefix: \"d-\";\n}\n");
+    }
+
+    #[test]
+    fn empties_a_block_given_no_declarations() {
+        let out = ensure_block("@theme {\n  --a: 1;\n}\n", "theme", None, "");
+        assert_eq!(out.source, "@theme {\n}\n");
+    }
+
+    #[test]
+    fn refuses_to_give_a_block_to_a_statement_at_rule() {
+        let err = ensure_at_rule_block(
+            "@import \"a.css\";\n",
+            "import",
+            None,
+            "x: 1;",
+            ParseOptions::default(),
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn keeps_comments_and_grouping_in_a_spliced_body() {
+        let body = "  --a: 1;\n\n  /* group */\n  --b: 2;";
+        let out = ensure_block("", "theme", None, body);
+        assert_eq!(
+            out.source,
+            "@theme {\n  --a: 1;\n\n  /* group */\n  --b: 2;\n}\n"
+        );
+    }
+
+    #[test]
+    fn reindents_a_body_taken_from_another_file() {
+        let body = "        --a: 1;\n        --b: 2;";
+        let out = ensure_block("", "theme", None, body);
+        assert_eq!(out.source, "@theme {\n  --a: 1;\n  --b: 2;\n}\n");
+    }
+
+    #[test]
+    fn rejects_an_empty_name() {
+        let err = ensure_at_rule_block("", "@", None, "x: 1;", ParseOptions::default());
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn rejects_declarations_that_would_unbalance_the_file() {
+        let err = ensure_at_rule_block("", "theme", None, "x: 1; }", ParseOptions::default());
+        assert!(err.is_err());
     }
 
     // -- spec parsing -------------------------------------------------------

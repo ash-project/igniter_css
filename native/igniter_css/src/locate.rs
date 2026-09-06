@@ -139,6 +139,16 @@ fn trimmed(node: &CssSyntaxNode) -> (usize, usize) {
 
 /// A child node that opens with `{`. Kind-agnostic on purpose: CSS has a dozen
 /// block kinds and new ones appear between Biome releases.
+/// The at-rule's inner node -- the one that carries the name, the prelude and
+/// the block. This is what [`declarations_in_block`] wants: it takes the block's
+/// *owner*, not the block, so it can be handed a rule or an at-rule alike.
+///
+/// `None` when the at-rule has no block.
+pub fn at_rule_body(at: &AtRuleRef) -> Option<CssSyntaxNode> {
+    let inner = at.node.children().next()?;
+    block_child(&inner).map(|_| inner)
+}
+
 fn block_child(node: &CssSyntaxNode) -> Option<CssSyntaxNode> {
     node.children().find(|c| {
         c.first_token()

@@ -48,10 +48,31 @@ defmodule IgniterCss.Codemods do
       end)
     end
 
+    @doc "See `IgniterCss.ensure_at_rule_block/5`."
+    def ensure_at_rule_block(igniter, path, name, matching \\ nil, declarations, opts \\ []) do
+      update(igniter, path, "ensure_at_rule_block #{inspect(name)}", fn source ->
+        IgniterCss.ensure_at_rule_block(source, name, matching, declarations, opts)
+      end)
+    end
+
     @doc "See `IgniterCss.remove_at_rule/4`."
     def remove_at_rule(igniter, path, name, matching \\ nil, opts \\ []) do
       update(igniter, path, "remove_at_rule #{inspect(name)}", fn source ->
         IgniterCss.remove_at_rule(source, name, matching, opts)
+      end)
+    end
+
+    @doc "See `IgniterCss.add_import/4`."
+    def add_import(igniter, path, url, media \\ nil, opts \\ []) do
+      update(igniter, path, "add_import #{inspect(url)}", fn source ->
+        IgniterCss.add_import(source, url, media, opts)
+      end)
+    end
+
+    @doc "See `IgniterCss.remove_import/3`."
+    def remove_import(igniter, path, url, opts \\ []) do
+      update(igniter, path, "remove_import #{inspect(url)}", fn source ->
+        IgniterCss.remove_import(source, url, opts)
       end)
     end
 
@@ -123,7 +144,10 @@ defmodule IgniterCss.Codemods do
   else
     for {name, arity} <- [
           ensure_at_rule: 4,
+          ensure_at_rule_block: 6,
           remove_at_rule: 5,
+          add_import: 5,
+          remove_import: 4,
           ensure_rule: 5,
           remove_rule: 4,
           set_declaration: 6,

@@ -9,6 +9,138 @@ defmodule IgniterCss.TransformTest do
 
   alias IgniterCss.Transform
 
+  @complex """
+  /* header */
+  @layer base, components;
+
+  @import "./typography.css" layer(components);
+
+  @theme {
+    --font-display: "Satoshi", sans-serif;
+    --ease-fluid: cubic-bezier(0.3, 0, 0, 1);
+  }
+
+  a:hover,
+  a:focus-visible::before {
+    content: "a:b";
+  }
+
+  .card:not([data-open]) .body,
+  .card:not(:hover, :focus-within) > .footer {
+    display: none;
+  }
+
+  li:nth-child(2n + 1):not(:last-child) {
+    background: url(data:image/svg+xml;base64,PHN2Zy8+) no-repeat;
+  }
+
+  .grid {
+    grid-template-areas:
+      "head head"
+      "side main";
+    grid-template-columns: minmax(12rem, 1fr) 3fr;
+  }
+
+  @media (min-width: 40rem) and (max-width: 80rem) {
+    .x::selection {
+      color: white !important;
+    }
+  }
+
+  @supports (display: grid) and (not (display: inline-grid)) {
+    .y {
+      --shadow: 0 1px 2px rgb(0 0 0 / 0.05);
+    }
+  }
+
+  .typography {
+    h1 {
+      @apply text-2xl;
+    }
+  }
+  """
+
+  describe "beautify/2 on complex CSS" do
+    test "keeps every pseudo-class and pseudo-element attached to its selector" do
+      assert {:ok, out} = Transform.beautify(@complex)
+
+      for selector <- [
+            "a:hover",
+            "a:focus-visible::before",
+            ".card:not([data-open])",
+            ":not(:hover, :focus-within)",
+            "li:nth-child(2n + 1):not(:last-child)",
+            ".x::selection"
+          ] do
+        assert String.contains?(out, selector), "lost #{selector}"
+      end
+
+      refute out =~ ~r/:\s+(not|hover|nth-child|selection|focus-visible)\b/
+    end
+
+    test "keeps the separators a value needs" do
+      assert {:ok, out} = Transform.beautify(@complex)
+
+      assert out =~ "url(data:image/svg+xml;base64,PHN2Zy8+) no-repeat"
+      assert out =~ "minmax(12rem, 1fr) 3fr"
+      assert out =~ ~s|"head head" "side main"|
+      assert out =~ "rgb(0 0 0 / 0.05)"
+      assert out =~ "cubic-bezier(0.3, 0, 0, 1)"
+    end
+
+    test "keeps Tailwind's own at-rules intact" do
+      assert {:ok, out} = Transform.beautify(@complex)
+
+      assert {:ok, [theme]} = IgniterCss.get_at_rules(out, "theme")
+      assert length(theme.declarations) == 2
+      assert out =~ "@layer base, components;"
+      assert out =~ ~s|@import "./typography.css" layer(components);|
+      assert out =~ "@apply text-2xl"
+    end
+
+    test "preserves every selector and declaration" do
+      assert {:ok, out} = Transform.beautify(@complex)
+      assert {:ok, before} = IgniterCss.list_selectors(@complex)
+      assert {:ok, after_} = IgniterCss.list_selectors(out)
+
+      squeeze = fn list ->
+        list |> Enum.map(&(&1 |> String.split() |> Enum.join(" "))) |> Enum.sort()
+      end
+
+      assert squeeze.(before) == squeeze.(after_)
+
+      collapse = fn {:ok, ds} ->
+        Enum.map(ds, fn {k, v} -> {k, v |> String.split() |> Enum.join(" ")} end)
+      end
+
+      assert collapse.(IgniterCss.get_rule_declarations(@complex, ".grid")) ==
+               collapse.(IgniterCss.get_rule_declarations(out, ".grid"))
+    end
+
+    test "is idempotent and still parses" do
+      assert {:ok, once} = Transform.beautify(@complex)
+      assert {:ok, twice} = Transform.beautify(once)
+      assert once == twice
+      assert {:ok, _} = IgniterCss.validate(once)
+    end
+
+    test "keeps every comment" do
+      assert {:ok, out} = Transform.beautify(@complex)
+      assert out =~ "/* header */"
+    end
+
+    test "survives a minify then beautify round trip" do
+      assert {:ok, small} = Transform.minify(@complex)
+      assert {:ok, pretty} = Transform.beautify(small)
+
+      assert {:ok, before} = IgniterCss.list_selectors(@complex)
+      assert {:ok, after_} = IgniterCss.list_selectors(pretty)
+      assert length(before) == length(after_)
+      assert pretty =~ ".typography"
+      assert pretty =~ "@apply text-2xl"
+    end
+  end
+
   describe "minify/2" do
     test "keeps a space the grammar needs" do
       assert {:ok, "@media screen and (min-width:40em){.a{margin:1px -2px}}"} =

@@ -9,8 +9,8 @@
 use crate::ctx::{ParseCtx, ParseOptions};
 use crate::error::Result;
 use crate::locate::{
-    all_comments, declaration_lists, find_all_at_rules, find_all_rules, find_top_level_rules,
-    DeclRef,
+    all_comments, at_rule_body, declaration_lists, declarations_in_block, find_all_at_rules,
+    find_all_rules, find_at_rules_named, find_top_level_rules, DeclRef,
 };
 use crate::ops::query;
 use biome_css_syntax::{CssSyntaxKind, CssSyntaxNode};
@@ -449,6 +449,79 @@ pub fn extract_animations(source: &str, options: ParseOptions) -> Result<Vec<Ani
 }
 
 // ---------------------------------------------------------------------------
+// At-rules, read back whole
+// ---------------------------------------------------------------------------
+
+/// One at-rule, with the parts a caller needs to read a decision out of it.
+///
+/// `analyze` only reports that a `@plugin` exists; this reports *which* plugin
+/// and how it was configured, which is what an installer needs before it can
+/// generate code that agrees with the user's setup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AtRule {
+    /// Lowercased, without the `@`.
+    pub name: String,
+    /// Everything between the name and the `;` or `{`, trimmed.
+    pub prelude: String,
+    /// The first string literal or `url()` value before any block, unquoted --
+    /// `"daisyui"` in `@plugin "daisyui" { … }`.
+    pub target: Option<String>,
+    pub has_block: bool,
+    /// Declarations inside the block, in source order. Empty when the at-rule
+    /// has no block, or a block that holds rules rather than declarations.
+    pub declarations: Vec<(String, String)>,
+    /// The at-rule's own bytes, exactly as written.
+    pub text: String,
+    /// The bytes between the block's braces, exactly as written. `None` for an
+    /// at-rule with no block.
+    pub body: Option<String>,
+}
+
+/// Every **top-level** at-rule named `name`, optionally narrowed to those whose
+/// target matches `matching`.
+///
+/// Top-level only, for the same reason the codemods are: a `@plugin` nested
+/// inside a `@layer` is a different thing from one at the file's root, and
+/// guessing between them is how a caller gets a surprising answer.
+pub fn get_at_rules(
+    source: &str,
+    name: &str,
+    matching: Option<&str>,
+    options: ParseOptions,
+) -> Result<Vec<AtRule>> {
+    let wanted = name.trim().trim_start_matches('@').to_lowercase();
+
+    query(source, options, |ctx| {
+        Ok(find_at_rules_named(ctx, &wanted)
+            .iter()
+            .filter(|at| match matching {
+                None => true,
+                Some(m) => at.target.as_deref() == Some(m),
+            })
+            .map(|at| AtRule {
+                name: at.name.clone(),
+                prelude: at.prelude.clone(),
+                target: at.target.clone(),
+                has_block: at.has_block,
+                declarations: at_rule_body(at)
+                    .map(|block| {
+                        declarations_in_block(ctx, &block)
+                            .iter()
+                            .map(|d| (d.property.clone(), d.value_raw.trim().to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                text: ctx.source()[at.start..at.end].to_string(),
+                body: match (at.body_open, at.body_close) {
+                    (Some(open), Some(close)) => Some(ctx.source()[open..close].to_string()),
+                    _ => None,
+                },
+            })
+            .collect())
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Stylesheet statistics
 // ---------------------------------------------------------------------------
 
@@ -618,6 +691,85 @@ mod tests {
 
     fn opts() -> ParseOptions {
         ParseOptions::default()
+    }
+
+    // -- at-rules -----------------------------------------------------------
+
+    const TAILWIND: &str = r#"@import "tailwindcss";
+@plugin "../vendor/heroicons";
+@plugin "daisyui" {
+  prefix: "d-"; /* keeps daisyUI off our own .btn */
+  exclude: rootcolor;
+  logs: false;
+}
+@source "../js";
+
+.btn { color: red; }
+"#;
+
+    #[test]
+    fn reads_an_at_rule_block_as_declarations() {
+        let found = get_at_rules(TAILWIND, "plugin", Some("daisyui"), opts()).unwrap();
+        assert_eq!(found.len(), 1);
+
+        let at = &found[0];
+        assert_eq!(at.name, "plugin");
+        assert_eq!(at.target.as_deref(), Some("daisyui"));
+        assert!(at.has_block);
+        assert_eq!(
+            at.declarations,
+            vec![
+                ("prefix".to_string(), "\"d-\"".to_string()),
+                ("exclude".to_string(), "rootcolor".to_string()),
+                ("logs".to_string(), "false".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn narrows_by_target_and_returns_every_match_without_one() {
+        assert_eq!(
+            get_at_rules(TAILWIND, "plugin", None, opts())
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(get_at_rules(TAILWIND, "plugin", Some("nope"), opts())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_blockless_at_rule_reports_no_declarations() {
+        let found = get_at_rules(TAILWIND, "import", None, opts()).unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(!found[0].has_block);
+        assert!(found[0].declarations.is_empty());
+        assert_eq!(found[0].target.as_deref(), Some("tailwindcss"));
+    }
+
+    #[test]
+    fn the_leading_at_is_optional_in_the_name() {
+        assert_eq!(
+            get_at_rules(TAILWIND, "@source", None, opts()).unwrap(),
+            get_at_rules(TAILWIND, "source", None, opts()).unwrap()
+        );
+    }
+
+    #[test]
+    fn reports_the_at_rule_text_verbatim_comments_included() {
+        let found = get_at_rules(TAILWIND, "plugin", Some("daisyui"), opts()).unwrap();
+        assert!(found[0].text.starts_with("@plugin \"daisyui\" {"));
+        assert!(found[0]
+            .text
+            .contains("/* keeps daisyUI off our own .btn */"));
+    }
+
+    #[test]
+    fn an_absent_at_rule_is_an_empty_list_not_an_error() {
+        assert!(get_at_rules(".a { color: red; }\n", "plugin", None, opts())
+            .unwrap()
+            .is_empty());
     }
 
     // -- colours ------------------------------------------------------------

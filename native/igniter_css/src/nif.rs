@@ -123,6 +123,18 @@ pub struct ExValidation {
 }
 
 #[derive(NifStruct, Debug, Clone)]
+#[module = "IgniterCss.AtRule"]
+pub struct ExAtRule {
+    pub name: String,
+    pub prelude: String,
+    pub target: Option<String>,
+    pub has_block: bool,
+    pub declarations: Vec<(String, String)>,
+    pub text: String,
+    pub body: Option<String>,
+}
+
+#[derive(NifStruct, Debug, Clone)]
 #[module = "IgniterCss.Animation"]
 pub struct ExAnimation {
     pub name: String,
@@ -179,6 +191,29 @@ fn remove_at_rule_nif(
         atoms::remove_at_rule_nif(),
         at_rule::remove_at_rule(&source, &name, matching.as_deref(), opts.into())
             .map(ExOutcome::from)
+    )
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn ensure_at_rule_block_nif(
+    env: Env,
+    source: String,
+    name: String,
+    matching: Option<String>,
+    declarations: String,
+    opts: ExParseOpts,
+) -> NifResult<Term> {
+    respond!(
+        env,
+        atoms::ensure_at_rule_block_nif(),
+        at_rule::ensure_at_rule_block(
+            &source,
+            &name,
+            matching.as_deref(),
+            &declarations,
+            opts.into()
+        )
+        .map(ExOutcome::from)
     )
 }
 
@@ -526,6 +561,33 @@ fn merge_stylesheets_nif(env: Env, sources: Vec<String>, opts: ExParseOpts) -> N
         env,
         atoms::merge_stylesheets_nif(),
         transform::merge_stylesheets(&sources, opts.into())
+    )
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn get_at_rules_nif(
+    env: Env,
+    source: String,
+    name: String,
+    matching: Option<String>,
+    opts: ExParseOpts,
+) -> NifResult<Term> {
+    respond!(
+        env,
+        atoms::get_at_rules_nif(),
+        analyze::get_at_rules(&source, &name, matching.as_deref(), opts.into()).map(|list| {
+            list.into_iter()
+                .map(|a| ExAtRule {
+                    name: a.name,
+                    prelude: a.prelude,
+                    target: a.target,
+                    has_block: a.has_block,
+                    declarations: a.declarations,
+                    text: a.text,
+                    body: a.body,
+                })
+                .collect::<Vec<_>>()
+        })
     )
 }
 
