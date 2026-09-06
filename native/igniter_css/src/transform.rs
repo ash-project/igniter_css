@@ -86,6 +86,32 @@ pub fn minify(source: &str, options: ParseOptions) -> Result<String> {
     Ok(ctx.restore_bom(out))
 }
 
+/// Is this colon the one introducing a pseudo-class or pseudo-element, rather
+/// than a declaration or a media feature?
+///
+/// Read from the node the token hangs off, so `:not(...)` in a selector and
+/// `color:` in a body are told apart by the grammar rather than by their
+/// surroundings.
+fn is_selector_colon(token: &biome_css_syntax::CssSyntaxToken) -> bool {
+    token.parent().is_some_and(|parent| {
+        matches!(
+            parent.kind(),
+            CssSyntaxKind::CSS_PSEUDO_CLASS_SELECTOR
+                | CssSyntaxKind::CSS_PSEUDO_ELEMENT_SELECTOR
+                | CssSyntaxKind::CSS_PSEUDO_CLASS_FUNCTION_SELECTOR
+                | CssSyntaxKind::CSS_PSEUDO_CLASS_FUNCTION_SELECTOR_LIST
+                | CssSyntaxKind::CSS_PSEUDO_CLASS_FUNCTION_IDENTIFIER
+                | CssSyntaxKind::CSS_PSEUDO_CLASS_FUNCTION_COMPOUND_SELECTOR
+                | CssSyntaxKind::CSS_PSEUDO_CLASS_FUNCTION_COMPOUND_SELECTOR_LIST
+                | CssSyntaxKind::CSS_PSEUDO_CLASS_FUNCTION_RELATIVE_SELECTOR_LIST
+                | CssSyntaxKind::CSS_PSEUDO_CLASS_FUNCTION_VALUE_LIST
+                | CssSyntaxKind::CSS_PSEUDO_CLASS_FUNCTION_NTH
+                | CssSyntaxKind::CSS_PSEUDO_ELEMENT_FUNCTION_SELECTOR
+                | CssSyntaxKind::CSS_PSEUDO_ELEMENT_FUNCTION_IDENTIFIER
+        )
+    })
+}
+
 /// Re-print the stylesheet with one declaration per line and consistent
 /// indentation, keeping every comment.
 ///
@@ -222,7 +248,9 @@ pub fn beautify(source: &str, options: ParseOptions) -> Result<String> {
             }
             CssSyntaxKind::COLON => {
                 push(&mut out, &mut at_line_start, depth, ":");
-                out.push(' ');
+                if !is_selector_colon(token) {
+                    out.push(' ');
+                }
             }
             _ => {
                 if !at_line_start {
@@ -297,6 +325,37 @@ pub fn merge_stylesheets(sheets: &[String], options: ParseOptions) -> Result<Str
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_pseudo_class_colon_keeps_its_selector_together() {
+        let out = beautify(".a:not([data-x]) .b{color:red}", ParseOptions::default()).unwrap();
+        assert!(out.contains(".a:not([data-x]) .b"), "got {out:?}");
+        assert!(!out.contains(": not("), "got {out:?}");
+    }
+
+    #[test]
+    fn a_pseudo_element_colon_survives() {
+        let out = beautify(".a::before{content:\"\"}", ParseOptions::default()).unwrap();
+        assert!(out.contains(".a::before"), "got {out:?}");
+    }
+
+    #[test]
+    fn a_nested_pseudo_class_survives() {
+        let out = beautify(".a:not(:hover){color:red}", ParseOptions::default()).unwrap();
+        assert!(out.contains(".a:not(:hover)"), "got {out:?}");
+    }
+
+    #[test]
+    fn a_declaration_colon_still_gets_its_space() {
+        let out = beautify(".a{color:red}", ParseOptions::default()).unwrap();
+        assert!(out.contains("color: red"), "got {out:?}");
+    }
+
+    #[test]
+    fn a_media_feature_colon_still_gets_its_space() {
+        let out = beautify("@media (min-width:1px){.a{top:0}}", ParseOptions::default()).unwrap();
+        assert!(out.contains("min-width: 1px"), "got {out:?}");
+    }
     use super::*;
 
     fn opts() -> ParseOptions {
