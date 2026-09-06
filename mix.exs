@@ -4,7 +4,7 @@
 
 defmodule IgniterCss.MixProject do
   use Mix.Project
-  @version "0.2.0"
+  @version "1.0.0"
   @source_url "https://github.com/ash-project/igniter_css"
 
   @description """
@@ -120,7 +120,8 @@ defmodule IgniterCss.MixProject do
       {:dialyxir, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:ex_check, "~> 0.16", only: [:dev, :test]},
       {:credo, ">= 0.0.0", only: [:dev, :test], runtime: false},
-      {:ex_doc, "~> 0.40.3", only: [:dev, :test], runtime: false}
+      {:ex_doc, "~> 0.40.3", only: [:dev, :test], runtime: false},
+      {:git_ops, "~> 2.10", only: [:dev, :test], runtime: false}
     ]
   end
 

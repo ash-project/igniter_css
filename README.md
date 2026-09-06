@@ -26,7 +26,7 @@ else.
 ## Installation
 
 ```elixir
-{:igniter_css, "~> 0.2.0", only: [:dev, :test]}
+{:igniter_css, "~> 1.0.0", only: [:dev, :test]}
 ```
 
 Precompiled NIFs ship for the standard target matrix, so no Rust toolchain is
