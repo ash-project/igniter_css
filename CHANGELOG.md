@@ -60,3 +60,18 @@ SPDX-License-Identifier: MIT
 
 - feat(css): add CSS parser with AST transformation support
  [#1](https://github.com/ash-project/igniter_css/pull/1)
+
+## [v1.0.0](https://github.com/ash-project/igniter_css/compare/v0.2.0...v1.0.0) (2026-09-06)
+### Breaking Changes:
+
+* replace the Python CSS implementation with a Rust NIF (#38) by Shahryar Tavakkoli
+
+
+
+### Features:
+
+* ensure_at_rule_block/5 and AtRule.body, and fix three transform defects (#41) by Shahryar Tavakkoli
+
+### Bug Fixes:
+
+* contain parser panics and stack overflows, and decide from the CST (#39) by Shahryar Tavakkoli
