@@ -106,6 +106,26 @@ defmodule IgniterCss do
   end
 
   @doc """
+  Give the top-level at-rule `name` this block, replacing an existing body or
+  inserting the whole rule when there is none.
+
+  `declarations` is spliced in verbatim, re-indented to the file. `matching`
+  narrows to one target the way `remove_at_rule/4` does, and is carried into the
+  prelude.
+
+      iex> css = ~s|@import "tailwindcss";\\n|
+      iex> {:ok, out} = IgniterCss.ensure_at_rule_block(css, "theme", nil, "--color-a: red;")
+      iex> out.source
+      ~s|@import "tailwindcss";\\n@theme {\\n  --color-a: red;\\n}\\n|
+  """
+  @spec ensure_at_rule_block(String.t(), String.t(), String.t() | nil, String.t(), opts()) ::
+          result()
+  def ensure_at_rule_block(source, name, matching \\ nil, declarations, opts \\ []) do
+    Native.ensure_at_rule_block_nif(source, name, matching, declarations, ParseOpts.new(opts))
+    |> unwrap()
+  end
+
+  @doc """
   Remove top-level at-rules of `name`.
 
   `matching` filters by target (or, failing that, by the whole prelude); `nil`

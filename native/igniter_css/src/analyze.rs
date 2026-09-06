@@ -472,6 +472,9 @@ pub struct AtRule {
     pub declarations: Vec<(String, String)>,
     /// The at-rule's own bytes, exactly as written.
     pub text: String,
+    /// The bytes between the block's braces, exactly as written. `None` for an
+    /// at-rule with no block.
+    pub body: Option<String>,
 }
 
 /// Every **top-level** at-rule named `name`, optionally narrowed to those whose
@@ -509,6 +512,10 @@ pub fn get_at_rules(
                     })
                     .unwrap_or_default(),
                 text: ctx.source()[at.start..at.end].to_string(),
+                body: match (at.body_open, at.body_close) {
+                    (Some(open), Some(close)) => Some(ctx.source()[open..close].to_string()),
+                    _ => None,
+                },
             })
             .collect())
     })

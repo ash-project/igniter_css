@@ -32,6 +32,84 @@ defmodule IgniterCss.AtRulesTest do
   }
   """
 
+  describe "AtRule.body" do
+    test "hands back the block verbatim, comments and all" do
+      assert {:ok, [rule]} = IgniterCss.get_at_rules(@tailwind, "plugin", "daisyui")
+
+      assert rule.body =~ ~s|prefix: "d-"; /* keeps daisyUI off our own .btn */|
+      assert rule.body =~ "exclude: rootcolor;"
+    end
+
+    test "is nil for an at-rule that carries no block" do
+      assert {:ok, [rule]} = IgniterCss.get_at_rules(@tailwind, "source")
+      refute rule.has_block
+      assert rule.body == nil
+    end
+
+    test "round-trips through ensure_at_rule_block/5" do
+      assert {:ok, [rule]} = IgniterCss.get_at_rules(@tailwind, "plugin", "daisyui")
+      assert {:ok, out} = IgniterCss.ensure_at_rule_block("", "plugin", ~s|"daisyui"|, rule.body)
+      assert {:ok, [copied]} = IgniterCss.get_at_rules(out.source, "plugin", "daisyui")
+      assert copied.declarations == rule.declarations
+    end
+  end
+
+  describe "ensure_at_rule_block/5" do
+    test "inserts the block into the prologue when the at-rule is absent" do
+      assert {:ok, out} =
+               IgniterCss.ensure_at_rule_block(@tailwind, "theme", nil, "--color-brand: red;")
+
+      assert out.changed
+      assert out.source =~ "@theme {\n  --color-brand: red;\n}"
+      assert {:ok, [rule]} = IgniterCss.get_at_rules(out.source, "theme")
+      assert rule.declarations == [{"--color-brand", "red"}]
+    end
+
+    test "replaces the body of the at-rule it already has, rather than adding a second" do
+      assert {:ok, first} =
+               IgniterCss.ensure_at_rule_block(@tailwind, "theme", nil, "--color-brand: red;")
+
+      assert {:ok, second} =
+               IgniterCss.ensure_at_rule_block(first.source, "theme", nil, "--color-brand: blue;")
+
+      assert {:ok, [rule]} = IgniterCss.get_at_rules(second.source, "theme")
+      assert rule.declarations == [{"--color-brand", "blue"}]
+    end
+
+    test "is idempotent, so a re-run produces no diff" do
+      assert {:ok, first} =
+               IgniterCss.ensure_at_rule_block(@tailwind, "theme", nil, "--color-brand: red;")
+
+      assert {:ok, again} =
+               IgniterCss.ensure_at_rule_block(first.source, "theme", nil, "--color-brand: red;")
+
+      refute again.changed
+      assert again.source == first.source
+    end
+
+    test "narrows to one target and leaves its siblings alone" do
+      assert {:ok, out} =
+               IgniterCss.ensure_at_rule_block(@tailwind, "plugin", "daisyui", ~s|prefix: "x-";|)
+
+      assert {:ok, [rule]} = IgniterCss.get_at_rules(out.source, "plugin", "daisyui")
+      assert rule.declarations == [{"prefix", ~s|"x-"|}]
+      assert out.source =~ ~s|@plugin "../vendor/heroicons";|
+    end
+
+    test "refuses an at-rule that carries no block" do
+      assert {:error, _} = IgniterCss.ensure_at_rule_block(@tailwind, "source", nil, "x: 1;")
+    end
+
+    test "leaves the rest of the stylesheet untouched" do
+      assert {:ok, out} =
+               IgniterCss.ensure_at_rule_block(@tailwind, "theme", nil, "--color-brand: red;")
+
+      assert out.source =~ "/* the app's own stylesheet */"
+      assert out.source =~ ".btn {\n  color: red;\n}"
+      assert out.source =~ ~s|@import "tailwindcss" source(none);|
+    end
+  end
+
   describe "get_at_rules/4" do
     test "reads a block as declarations, in source order" do
       assert {:ok, [rule]} = IgniterCss.get_at_rules(@tailwind, "plugin", "daisyui")

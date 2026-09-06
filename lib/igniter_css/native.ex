@@ -39,6 +39,8 @@ defmodule IgniterCss.Native do
   # -- at-rules ---------------------------------------------------------------
 
   def ensure_at_rule_nif(_source, _line, _opts), do: error()
+
+  def ensure_at_rule_block_nif(_source, _name, _matching, _declarations, _opts), do: error()
   def remove_at_rule_nif(_source, _name, _matching, _opts), do: error()
   def has_at_rule_nif(_source, _line, _opts), do: error()
   def add_import_nif(_source, _url, _media, _opts), do: error()

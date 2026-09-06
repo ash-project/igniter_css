@@ -131,6 +131,7 @@ pub struct ExAtRule {
     pub has_block: bool,
     pub declarations: Vec<(String, String)>,
     pub text: String,
+    pub body: Option<String>,
 }
 
 #[derive(NifStruct, Debug, Clone)]
@@ -190,6 +191,29 @@ fn remove_at_rule_nif(
         atoms::remove_at_rule_nif(),
         at_rule::remove_at_rule(&source, &name, matching.as_deref(), opts.into())
             .map(ExOutcome::from)
+    )
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn ensure_at_rule_block_nif(
+    env: Env,
+    source: String,
+    name: String,
+    matching: Option<String>,
+    declarations: String,
+    opts: ExParseOpts,
+) -> NifResult<Term> {
+    respond!(
+        env,
+        atoms::ensure_at_rule_block_nif(),
+        at_rule::ensure_at_rule_block(
+            &source,
+            &name,
+            matching.as_deref(),
+            &declarations,
+            opts.into()
+        )
+        .map(ExOutcome::from)
     )
 }
 
@@ -560,6 +584,7 @@ fn get_at_rules_nif(
                     has_block: a.has_block,
                     declarations: a.declarations,
                     text: a.text,
+                    body: a.body,
                 })
                 .collect::<Vec<_>>()
         })

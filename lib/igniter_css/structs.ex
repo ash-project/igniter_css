@@ -143,7 +143,8 @@ defmodule IgniterCss.AtRule do
           target: String.t() | nil,
           has_block: boolean(),
           declarations: [{String.t(), String.t()}],
-          text: String.t()
+          text: String.t(),
+          body: String.t() | nil
         }
 
   defstruct name: "",
@@ -151,7 +152,8 @@ defmodule IgniterCss.AtRule do
             target: nil,
             has_block: false,
             declarations: [],
-            text: ""
+            text: "",
+            body: nil
 end
 
 defmodule IgniterCss.Animation do
