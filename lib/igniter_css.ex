@@ -126,11 +126,84 @@ defmodule IgniterCss do
   end
 
   @doc """
+  Set each of `declarations` inside the top-level at-rule `name`, and leave
+  everything else in its block as it is.
+
+  `ensure_at_rule_block/5` gives the block exactly the body you pass, which is
+  right when the block is yours. When it is shared — a project's `@theme` holds
+  the tokens a library installs *and* the project's own — use this instead: a
+  property the block already has keeps its place and its comments and only its
+  value is rewritten, and only when it differs token for token; a property it
+  does not have is appended in the block's own indentation; every other
+  declaration, nested rule and comment stays byte for byte. Running it again
+  changes nothing.
+
+  `declarations` is parsed, not scanned — a `;` inside a string or `url()` ends
+  nothing — and must be declarations only. A property given twice is set once,
+  at its last value. When the at-rule is absent the whole rule is inserted, with
+  `declarations` spliced in verbatim, as `ensure_at_rule_block/5` does.
+  `matching` narrows to one target the way `remove_at_rule/4` does; `""` is the
+  block written with nothing after its name, `@theme` and not `@theme inline`.
+  `remove_at_rule_declarations/5` takes them out again.
+
+      iex> css = ~s|@theme {\\n  --font-display: "Satoshi";\\n  --color-a: red;\\n}\\n|
+      iex> {:ok, out} = IgniterCss.ensure_at_rule_declarations(css, "theme", nil, "--color-a: blue; --color-b: green;")
+      iex> out.source
+      ~s|@theme {\\n  --font-display: "Satoshi";\\n  --color-a: blue;\\n  --color-b: green;\\n}\\n|
+  """
+  @spec ensure_at_rule_declarations(
+          String.t(),
+          String.t(),
+          String.t() | nil,
+          String.t(),
+          opts()
+        ) :: result()
+  def ensure_at_rule_declarations(source, name, matching \\ nil, declarations, opts \\ []) do
+    source
+    |> Native.ensure_at_rule_declarations_nif(name, matching, declarations, ParseOpts.new(opts))
+    |> unwrap()
+  end
+
+  @doc """
+  Remove each of `declarations` from the top-level at-rule `name`, and leave
+  everything else in its block as it is — the inverse of
+  `ensure_at_rule_declarations/5`.
+
+  A declaration goes only while it is still the one given: the same property,
+  the same value token for token and the same `!important`. One whose value has
+  been changed since is someone's edit, and stays. A removed declaration takes
+  the comments it owns — see `IgniterCss.Codemods` for the ownership rules — and
+  a block left with nothing in it takes its at-rule with it.
+
+  `declarations` is parsed the way `ensure_at_rule_declarations/5` parses it.
+  `matching` narrows to one target the way `remove_at_rule/4` does. An at-rule
+  that is not there, or has no block, has nothing to remove.
+
+      iex> css = ~s|@theme {\\n  --font-display: "Satoshi";\\n  --color-a: blue;\\n}\\n|
+      iex> {:ok, out} = IgniterCss.remove_at_rule_declarations(css, "theme", "", "--color-a: blue;")
+      iex> out.source
+      ~s|@theme {\\n  --font-display: "Satoshi";\\n}\\n|
+  """
+  @spec remove_at_rule_declarations(
+          String.t(),
+          String.t(),
+          String.t() | nil,
+          String.t(),
+          opts()
+        ) :: result()
+  def remove_at_rule_declarations(source, name, matching \\ nil, declarations, opts \\ []) do
+    source
+    |> Native.remove_at_rule_declarations_nif(name, matching, declarations, ParseOpts.new(opts))
+    |> unwrap()
+  end
+
+  @doc """
   Remove top-level at-rules of `name`.
 
-  `matching` filters by target (or, failing that, by the whole prelude); `nil`
-  removes every at-rule with that name. Comments the removed rule owns go with
-  it — see `IgniterCss.Codemods` for the ownership rules.
+  `matching` filters by target (or, failing that, by the whole prelude, so `""`
+  is an at-rule with nothing after its name: `@theme`, not `@theme inline`);
+  `nil` removes every at-rule with that name. Comments the removed rule owns go
+  with it — see `IgniterCss.Codemods` for the ownership rules.
   """
   @spec remove_at_rule(String.t(), String.t(), String.t() | nil, opts()) :: result()
   def remove_at_rule(source, name, matching \\ nil, opts \\ []) do
@@ -151,9 +224,10 @@ defmodule IgniterCss do
   @doc """
   Every top-level at-rule named `name`, as `IgniterCss.AtRule` structs.
 
-  Pass `matching` to narrow to a single target — the string or `url()` before
-  the block. Returns `[]` when nothing matches; absence is an answer, not an
-  error.
+  Pass `matching` to narrow the way `remove_at_rule/4` does: to a target — the
+  string or `url()` before the block, quoted or not — or, for an at-rule without
+  one, to its whole prelude, `""` being nothing after the name. Returns `[]` when
+  nothing matches; absence is an answer, not an error.
 
   Unlike `has_at_rule?/3`, this hands back the at-rule's block, so a caller can
   read a decision out of it rather than only confirm the line exists:

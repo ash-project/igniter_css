@@ -74,6 +74,21 @@ pub struct AtRuleRef {
     pub body_close: Option<usize>,
 }
 
+impl AtRuleRef {
+    /// Is this the at-rule a caller's `matching` names? Its target when it has
+    /// one -- `@plugin "daisyui"` is `daisyui` -- and its whole prelude when it
+    /// has none, so `""` is an at-rule with nothing after its name: `@theme`,
+    /// not `@theme inline`. `None` names every one. `want` is already through
+    /// `normalize_target_needle`.
+    pub fn matches(&self, want: Option<&str>) -> bool {
+        match (want, &self.target) {
+            (None, _) => true,
+            (Some(want), Some(target)) => target == want,
+            (Some(want), None) => self.prelude_norm == want,
+        }
+    }
+}
+
 /// A declaration: `property: value;`.
 #[derive(Debug, Clone)]
 pub struct DeclRef {
@@ -619,6 +634,51 @@ pub fn declarations_in_block(ctx: &ParseCtx, block_node: &CssSyntaxNode) -> Vec<
         .filter(|n| is_declaration_item(n.kind()))
         .filter_map(|n| decl_ref_from(n, ctx))
         .collect()
+}
+
+/// An at-rule's block seen as a rule, so the rule-body machinery --
+/// [`declarations_in`], `append_to_body` -- works on `@theme { ... }` exactly as
+/// it does on `.btn { ... }`. `None` for an at-rule with no block.
+pub fn at_rule_block_rule(at: &AtRuleRef) -> Option<RuleRef> {
+    Some(RuleRef {
+        node: at_rule_body(at)?,
+        selector_raw: format!("@{}", at.name),
+        selector_norm: format!("@{}", at.name),
+        start: at.start,
+        end: at.end,
+        body_open: at.body_open?,
+        body_close: at.body_close?,
+    })
+}
+
+/// Items directly inside `rule`'s body that are not declarations: a nested
+/// rule, a nested at-rule, or text the parser could not read as a declaration.
+/// A stray `;` is nothing, and is not reported.
+pub fn non_declaration_items(ctx: &ParseCtx, rule: &RuleRef) -> Vec<CssSyntaxNode> {
+    let Some(block) = block_child(&rule.node) else {
+        return Vec::new();
+    };
+    block_items(&block)
+        .into_iter()
+        .filter(|n| !is_declaration_item(n.kind()))
+        .filter(|n| !matches!(ctx.text(n.text_trimmed_range()).trim(), "" | ";"))
+        .collect()
+}
+
+/// The value of `decl` as its tokens joined by single spaces, for comparing two
+/// values: whitespace and comments between tokens are trivia, so a value broken
+/// over three lines equals the same value on one. Read from the CST, like
+/// `AtRuleRef::prelude_norm`.
+pub fn value_norm(decl: &DeclRef) -> String {
+    decl.node
+        .descendants_tokens(Direction::Next)
+        .filter(|t| {
+            let start = usize::from(t.text_trimmed_range().start());
+            start >= decl.value_start && start < decl.value_end
+        })
+        .map(|t| t.text_trimmed().to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The last declaration of `property` in `rule`, or `None`.

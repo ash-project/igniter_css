@@ -12,6 +12,7 @@ use crate::locate::{
     all_comments, at_rule_body, declaration_lists, declarations_in_block, find_all_at_rules,
     find_all_rules, find_at_rules_named, find_top_level_rules, DeclRef,
 };
+use crate::ops::at_rule::normalize_target_needle;
 use crate::ops::query;
 use biome_css_syntax::{CssSyntaxKind, CssSyntaxNode};
 use biome_rowan::Direction;
@@ -477,8 +478,8 @@ pub struct AtRule {
     pub body: Option<String>,
 }
 
-/// Every **top-level** at-rule named `name`, optionally narrowed to those whose
-/// target matches `matching`.
+/// Every **top-level** at-rule named `name`, optionally narrowed to those
+/// `matching` names -- see [`crate::locate::AtRuleRef::matches`].
 ///
 /// Top-level only, for the same reason the codemods are: a `@plugin` nested
 /// inside a `@layer` is a different thing from one at the file's root, and
@@ -490,14 +491,12 @@ pub fn get_at_rules(
     options: ParseOptions,
 ) -> Result<Vec<AtRule>> {
     let wanted = name.trim().trim_start_matches('@').to_lowercase();
+    let want = matching.map(normalize_target_needle);
 
     query(source, options, |ctx| {
         Ok(find_at_rules_named(ctx, &wanted)
             .iter()
-            .filter(|at| match matching {
-                None => true,
-                Some(m) => at.target.as_deref() == Some(m),
-            })
+            .filter(|at| at.matches(want.as_deref()))
             .map(|at| AtRule {
                 name: at.name.clone(),
                 prelude: at.prelude.clone(),
@@ -737,6 +736,28 @@ mod tests {
         assert!(get_at_rules(TAILWIND, "plugin", Some("nope"), opts())
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn matching_reads_a_target_however_it_is_quoted() {
+        assert_eq!(
+            get_at_rules(TAILWIND, "plugin", Some("\"daisyui\""), opts()).unwrap(),
+            get_at_rules(TAILWIND, "plugin", Some("daisyui"), opts()).unwrap()
+        );
+    }
+
+    #[test]
+    fn matching_a_targetless_at_rule_reads_its_prelude() {
+        let src = "@theme inline {\n  --font: x;\n}\n@theme {\n  --a: 1;\n}\n";
+        let plain = get_at_rules(src, "theme", Some(""), opts()).unwrap();
+        assert_eq!(plain.len(), 1);
+        assert_eq!(
+            plain[0].declarations,
+            vec![("--a".to_string(), "1".to_string())]
+        );
+        let inline = get_at_rules(src, "theme", Some("inline"), opts()).unwrap();
+        assert_eq!(inline.len(), 1);
+        assert_eq!(inline[0].prelude, "inline");
     }
 
     #[test]
