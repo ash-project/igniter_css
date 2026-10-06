@@ -22,7 +22,9 @@ defmodule IgniterCss.Codemods do
   * a comment separated from the target by a **blank line**;
   * a comment that reads as a **section header** — one spanning several lines, or
     containing a rule of three or more repeated `= - * # ~ _` characters, e.g.
-    `/* ===== Layout ===== */`.
+    `/* ===== Layout ===== */`;
+  * the comment the **file opens with** — it is the file's, and a rule inserted
+    at the top lands right under it.
 
   ## Example
 

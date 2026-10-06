@@ -790,6 +790,12 @@ mod tests {
     }
 
     #[test]
+    fn removing_the_last_at_rule_leaves_no_blank_line_at_the_end() {
+        let o = remove("@import \"a\";\n\n@plugin \"x\";\n", "plugin", None);
+        assert_eq!(o.source, "@import \"a\";\n");
+    }
+
+    #[test]
     fn a_caller_supplied_needle_is_unquoted() {
         assert_eq!(normalize_target_needle("a.css"), "a.css");
         assert_eq!(normalize_target_needle("\"a.css\""), "a.css");
