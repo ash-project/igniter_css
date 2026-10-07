@@ -22,7 +22,9 @@ defmodule IgniterCss.Codemods do
   * a comment separated from the target by a **blank line**;
   * a comment that reads as a **section header** — one spanning several lines, or
     containing a rule of three or more repeated `= - * # ~ _` characters, e.g.
-    `/* ===== Layout ===== */`.
+    `/* ===== Layout ===== */`;
+  * the comment the **file opens with** — it is the file's, and a rule inserted
+    at the top lands right under it.
 
   ## Example
 
@@ -52,6 +54,34 @@ defmodule IgniterCss.Codemods do
     def ensure_at_rule_block(igniter, path, name, matching \\ nil, declarations, opts \\ []) do
       update(igniter, path, "ensure_at_rule_block #{inspect(name)}", fn source ->
         IgniterCss.ensure_at_rule_block(source, name, matching, declarations, opts)
+      end)
+    end
+
+    @doc "See `IgniterCss.ensure_at_rule_declarations/5`."
+    def ensure_at_rule_declarations(
+          igniter,
+          path,
+          name,
+          matching \\ nil,
+          declarations,
+          opts \\ []
+        ) do
+      update(igniter, path, "ensure_at_rule_declarations #{inspect(name)}", fn source ->
+        IgniterCss.ensure_at_rule_declarations(source, name, matching, declarations, opts)
+      end)
+    end
+
+    @doc "See `IgniterCss.remove_at_rule_declarations/5`."
+    def remove_at_rule_declarations(
+          igniter,
+          path,
+          name,
+          matching \\ nil,
+          declarations,
+          opts \\ []
+        ) do
+      update(igniter, path, "remove_at_rule_declarations #{inspect(name)}", fn source ->
+        IgniterCss.remove_at_rule_declarations(source, name, matching, declarations, opts)
       end)
     end
 
@@ -145,6 +175,8 @@ defmodule IgniterCss.Codemods do
     for {name, arity} <- [
           ensure_at_rule: 4,
           ensure_at_rule_block: 6,
+          ensure_at_rule_declarations: 6,
+          remove_at_rule_declarations: 6,
           remove_at_rule: 5,
           add_import: 5,
           remove_import: 4,

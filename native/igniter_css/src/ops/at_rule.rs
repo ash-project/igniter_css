@@ -12,11 +12,15 @@ use crate::ctx::{ParseCtx, ParseOptions};
 use crate::edit::Edit;
 use crate::error::{CssError, Result};
 use crate::locate::{
-    find_at_rules_named, find_top_level_at_rules, top_level_nodes, top_of_file_anchor, AtRuleRef,
+    at_rule_block_rule, declarations_in, find_at_rules_named, find_top_level_at_rules,
+    find_top_level_rules, non_declaration_items, normalize_property, top_level_nodes,
+    top_of_file_anchor, value_norm, AtRuleRef, DeclRef,
 };
+use crate::ops::rule::append_all_to_body;
 use crate::ops::{reindent, run, validate_snippet, Outcome};
 use crate::trivia::{absorb_surrounding_blank_line, comment_ranges, deletion_span};
 use biome_css_syntax::CssSyntaxKind;
+use std::collections::HashMap;
 
 /// At-rules that must appear before any style rule, in this order.
 const PROLOGUE_FIRST: &[&str] = &["charset", "import", "use", "namespace"];
@@ -185,8 +189,8 @@ pub fn ensure_at_rule_line(source: &str, line: &str, options: ParseOptions) -> R
 }
 
 /// Remove every top-level at-rule of `name` whose target (or, failing that,
-/// whose whole prelude) matches `matching`. `matching` of `None` removes all of
-/// them.
+/// whose whole prelude) matches `matching` -- see [`AtRuleRef::matches`].
+/// `matching` of `None` removes all of them.
 pub fn remove_at_rule(
     source: &str,
     name: &str,
@@ -200,18 +204,8 @@ pub fn remove_at_rule(
         let comments = comment_ranges(ctx);
         let mut edits = Vec::new();
         for at in find_top_level_at_rules(ctx) {
-            if at.name != want_name {
+            if at.name != want_name || !at.matches(want.as_deref()) {
                 continue;
-            }
-            if let Some(w) = &want {
-                let hit = match &at.target {
-                    Some(target) => target == w,
-                    // No subject to match on (`@layer base;`): compare preludes.
-                    None => at.prelude_norm == *w,
-                };
-                if !hit {
-                    continue;
-                }
             }
             let span = deletion_span(ctx, &comments, at.start, at.end);
             let span = absorb_surrounding_blank_line(ctx, span);
@@ -274,6 +268,61 @@ fn render_block_body(ctx: &ParseCtx, body: &str, indent: &str, single_line: bool
     format!("{nl}{inner}{nl}{indent}")
 }
 
+/// The lowercase at-rule name a caller passed, with or without its `@`.
+fn block_name(name: &str) -> Result<String> {
+    let name = name.trim().trim_start_matches('@').trim().to_lowercase();
+    if name.is_empty() {
+        return Err(CssError::InvalidInput("at-rule name is empty".to_string()));
+    }
+    Ok(name)
+}
+
+/// The top-level at-rule `name` a block op works on: the first one, or the
+/// first whose target -- or, without one, whose prelude -- is `matching`.
+fn find_block_at_rule(ctx: &ParseCtx, name: &str, matching: Option<&str>) -> Option<AtRuleRef> {
+    find_at_rules_named(ctx, name)
+        .into_iter()
+        .find(|at| at.matches(matching))
+}
+
+/// The refusal both block ops give an at-rule written as a statement.
+fn no_block(name: &str) -> CssError {
+    CssError::InvalidInput(format!(
+        "@{name} is present without a block; refusing to give it one"
+    ))
+}
+
+/// Insert `@name matching { declarations }` where an at-rule of this family
+/// belongs, its body spliced in verbatim and re-indented.
+fn insert_block(
+    ctx: &ParseCtx,
+    name: &str,
+    matching: Option<&str>,
+    declarations: &str,
+) -> Result<Vec<Edit>> {
+    let header = match matching.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => format!("@{name} {m}"),
+        None => format!("@{name}"),
+    };
+    let spec = parse_at_rule_spec(&format!("{header} {{}}"))?;
+    let at = insertion_offset(ctx, &spec);
+    let nl = ctx.nl();
+    let indent = ctx.indent_at(at).to_string();
+    let block = format!(
+        "{header} {{{}}}",
+        render_block_body(ctx, declarations, &indent, false)
+    );
+
+    let text = if at == 0 {
+        format!("{block}{nl}")
+    } else if ctx.source()[..at].ends_with('\n') {
+        format!("{indent}{block}{nl}")
+    } else {
+        format!("{nl}{indent}{block}")
+    };
+    Ok(vec![Edit::insert(at, text)])
+}
+
 /// Give the top-level at-rule `name` this block, replacing an existing body or
 /// inserting the whole rule when there is none.
 ///
@@ -286,59 +335,291 @@ pub fn ensure_at_rule_block(
     declarations: &str,
     options: ParseOptions,
 ) -> Result<Outcome> {
-    let want_name = name.trim().trim_start_matches('@').trim().to_lowercase();
-    if want_name.is_empty() {
-        return Err(CssError::InvalidInput("at-rule name is empty".to_string()));
-    }
+    let want_name = block_name(name)?;
     validate_snippet(declarations, "declarations")?;
     let want = matching.map(normalize_target_needle);
 
-    let header = match matching.map(str::trim).filter(|m| !m.is_empty()) {
-        Some(m) => format!("@{want_name} {m}"),
-        None => format!("@{want_name}"),
+    run(source, options, |ctx| {
+        let Some(at) = find_block_at_rule(ctx, &want_name, want.as_deref()) else {
+            return insert_block(ctx, &want_name, matching, declarations);
+        };
+        let (Some(open), Some(close)) = (at.body_open, at.body_close) else {
+            return Err(no_block(&want_name));
+        };
+        let indent = ctx.indent_at(at.start).to_string();
+        let single_line = !ctx.source()[at.start..at.end].contains('\n');
+        let replacement = render_block_body(ctx, declarations, &indent, single_line);
+        Ok(vec![Edit::replace(open, close, replacement)])
+    })
+}
+
+/// One declaration a caller asked for, read off the CST of a throwaway rule.
+#[derive(Debug, Clone)]
+struct Wanted {
+    /// [`normalize_property`] of its property, the key it is matched by.
+    property: String,
+    /// The value as written, its continuation lines relative to the
+    /// declaration's own indentation.
+    value: String,
+    /// [`value_norm`] of the value, what "already set" is decided by.
+    value_norm: String,
+    important: bool,
+    /// The whole declaration, `;`-terminated, at no indentation.
+    text: String,
+}
+
+/// The declarations of `text`, parsed rather than scanned: a `;` inside a
+/// string, a `url()` or a comment ends nothing. A property given twice is
+/// given once, at its last value, as CSS reads it.
+///
+/// Refuses anything that is not a plain list of declarations -- a nested rule
+/// or an at-rule has no property to be matched by, and text the parser could
+/// not read as a declaration would otherwise be dropped without a word.
+fn wanted_declarations(text: &str) -> Result<Vec<Wanted>> {
+    let probe = format!("a{{{text}}}");
+    let ctx = ParseCtx::try_new(&probe, ParseOptions::default())?;
+    let rule = find_top_level_rules(&ctx)
+        .into_iter()
+        .next()
+        .filter(|_| ctx.round_trips())
+        .ok_or_else(|| {
+            CssError::InvalidInput(format!("cannot understand declarations {text:?}"))
+        })?;
+
+    if let Some(item) = non_declaration_items(&ctx, &rule).first() {
+        return Err(CssError::InvalidInput(format!(
+            "{:?} is not a declaration; pass declarations only",
+            ctx.text(item.text_trimmed_range()).trim()
+        )));
+    }
+
+    let mut wanted: Vec<Wanted> = Vec::new();
+    for decl in declarations_in(&ctx, &rule) {
+        let wanted_decl = wanted_from(&ctx, &decl);
+        match wanted
+            .iter_mut()
+            .find(|w| w.property == wanted_decl.property)
+        {
+            Some(earlier) => *earlier = wanted_decl,
+            None => wanted.push(wanted_decl),
+        }
+    }
+    Ok(wanted)
+}
+
+fn wanted_from(ctx: &ParseCtx, decl: &DeclRef) -> Wanted {
+    let src = ctx.source();
+    // The whitespace in front of the declaration on its own line, so a value
+    // broken over lines keeps its shape relative to the property it belongs to
+    // -- whatever precedes that whitespace, the probe's `a{` included.
+    let before = &src[ctx.line_start(decl.start)..decl.start];
+    let base = before.len() - before.trim_end_matches([' ', '\t']).len();
+    let whole = src[decl.start..decl.end].trim_end();
+    let whole = if whole.ends_with(';') {
+        whole.to_string()
+    } else {
+        format!("{whole};")
     };
 
-    run(source, options, |ctx| {
-        let existing = find_at_rules_named(ctx, &want_name)
-            .into_iter()
-            .find(|at| match &want {
-                None => true,
-                Some(w) => match &at.target {
-                    Some(target) => target == w,
-                    None => at.prelude_norm == *w,
-                },
-            });
+    Wanted {
+        property: normalize_property(&decl.property),
+        value: relative_lines(src[decl.value_start..decl.value_end].trim(), base),
+        value_norm: value_norm(decl),
+        important: decl.important,
+        text: reindent(&format!("{}{whole}", " ".repeat(base)), "", "\n"),
+    }
+}
 
-        if let Some(at) = existing {
-            let (Some(open), Some(close)) = (at.body_open, at.body_close) else {
-                return Err(CssError::InvalidInput(format!(
-                    "@{want_name} is present without a block; refusing to give it one"
-                )));
+/// `text` with up to `base` columns of indentation taken off every line after
+/// the first, which is where a value's continuation lines sit.
+fn relative_lines(text: &str, base: usize) -> String {
+    let mut lines = text.split('\n');
+    let first = lines
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('\r')
+        .to_string();
+    lines.fold(first, |mut out, line| {
+        let line = line.trim_end_matches('\r');
+        let own = line.len() - line.trim_start_matches([' ', '\t']).len();
+        out.push('\n');
+        out.push_str(&line[own.min(base)..]);
+        out
+    })
+}
+
+/// `value` with each continuation line moved under `indent`, the file's own
+/// indentation for the declaration it now belongs to.
+fn indent_continuation(value: &str, indent: &str, nl: &str) -> String {
+    let mut lines = value.split('\n');
+    let first = lines.next().unwrap_or("").to_string();
+    lines.fold(first, |mut out, line| {
+        out.push_str(nl);
+        if !line.trim().is_empty() {
+            out.push_str(indent);
+            out.push_str(line);
+        }
+        out
+    })
+}
+
+/// Set each of `declarations` inside the top-level at-rule `name`, and leave
+/// everything else in its block as it is -- the other declarations, nested
+/// rules and every comment. Insert the whole rule, `declarations` spliced in
+/// verbatim, when there is none.
+///
+/// A property the block already has keeps its place and its comments: only its
+/// value bytes are rewritten, and only when the value differs token for token,
+/// so whitespace inside a value broken over lines is not a change. A property
+/// it does not have is appended after its last item, in the indentation of the
+/// items already there. Running it again changes nothing.
+///
+/// `matching` narrows to one target the way [`remove_at_rule`] does, and is
+/// carried into an inserted prelude.
+pub fn ensure_at_rule_declarations(
+    source: &str,
+    name: &str,
+    matching: Option<&str>,
+    declarations: &str,
+    options: ParseOptions,
+) -> Result<Outcome> {
+    let want_name = block_name(name)?;
+    validate_snippet(declarations, "declarations")?;
+    let wanted = wanted_declarations(declarations)?;
+    let want = matching.map(normalize_target_needle);
+
+    run(source, options, |ctx| {
+        let Some(at) = find_block_at_rule(ctx, &want_name, want.as_deref()) else {
+            return insert_block(ctx, &want_name, matching, declarations);
+        };
+        let Some(block) = at_rule_block_rule(&at) else {
+            return Err(no_block(&want_name));
+        };
+
+        // The last declaration of each property is the one CSS applies, so it
+        // is the one a caller means; later entries replace earlier ones here.
+        let present: HashMap<String, DeclRef> = declarations_in(ctx, &block)
+            .into_iter()
+            .map(|d| (normalize_property(&d.property), d))
+            .collect();
+
+        let nl = ctx.nl();
+        let mut edits = Vec::new();
+        let mut missing = Vec::new();
+        for w in &wanted {
+            let Some(d) = present.get(&w.property) else {
+                missing.push(w.text.clone());
+                continue;
             };
-            let indent = ctx.indent_at(at.start).to_string();
-            let single_line = !ctx.source()[at.start..at.end].contains('\n');
-            let replacement = render_block_body(ctx, declarations, &indent, single_line);
-            return Ok(vec![Edit::replace(open, close, replacement)]);
+            if d.important == w.important && value_norm(d) == w.value_norm {
+                continue;
+            }
+            let end = d.important_range.map_or(d.value_end, |(_, end)| end);
+            let indent = if ctx.is_at_line_start(d.start) {
+                ctx.indent_at(d.start)
+            } else {
+                ""
+            };
+            let flag = if w.important { " !important" } else { "" };
+            edits.push(Edit::replace(
+                d.value_start,
+                end,
+                format!("{}{flag}", indent_continuation(&w.value, indent, nl)),
+            ));
         }
 
-        let spec = parse_at_rule_spec(&format!("{header} {{}}"))?;
-        let at = insertion_offset(ctx, &spec);
-        let nl = ctx.nl();
-        let indent = ctx.indent_at(at).to_string();
-        let block = format!(
-            "{header} {{{}}}",
-            render_block_body(ctx, declarations, &indent, false)
-        );
-
-        let text = if at == 0 {
-            format!("{block}{nl}")
-        } else if ctx.source()[..at].ends_with('\n') {
-            format!("{indent}{block}{nl}")
-        } else {
-            format!("{nl}{indent}{block}")
-        };
-        Ok(vec![Edit::insert(at, text)])
+        edits.extend(append_all_to_body(ctx, &block, &missing));
+        Ok(edits)
     })
+}
+
+/// Remove each of `declarations` from the top-level at-rule `name` -- the
+/// inverse of [`ensure_at_rule_declarations`] -- and leave everything else in
+/// its block as it is.
+///
+/// A declaration goes only while it is still the one given: the same property,
+/// the same value token for token and the same `!important`. One whose value
+/// has been changed since is someone's edit, and stays. A removed declaration
+/// takes the comments it owns (see [`crate::trivia`]); a block left with
+/// nothing in it takes its at-rule, the way [`remove_at_rule`] removes one.
+///
+/// `matching` narrows to one target the way [`remove_at_rule`] does. An at-rule
+/// that is not there, or has no block, has nothing to remove.
+pub fn remove_at_rule_declarations(
+    source: &str,
+    name: &str,
+    matching: Option<&str>,
+    declarations: &str,
+    options: ParseOptions,
+) -> Result<Outcome> {
+    let want_name = block_name(name)?;
+    validate_snippet(declarations, "declarations")?;
+    let wanted: HashMap<String, Wanted> = wanted_declarations(declarations)?
+        .into_iter()
+        .map(|w| (w.property.clone(), w))
+        .collect();
+    let want = matching.map(normalize_target_needle);
+
+    run(source, options, |ctx| {
+        let Some(at) = find_block_at_rule(ctx, &want_name, want.as_deref()) else {
+            return Ok(vec![]);
+        };
+        let Some(block) = at_rule_block_rule(&at) else {
+            return Ok(vec![]);
+        };
+
+        let comments = comment_ranges(ctx);
+        let spans: Vec<(usize, usize)> = declarations_in(ctx, &block)
+            .iter()
+            .filter(|d| {
+                wanted
+                    .get(&normalize_property(&d.property))
+                    .is_some_and(|w| d.important == w.important && value_norm(d) == w.value_norm)
+            })
+            .map(|d| {
+                let span = deletion_span(ctx, &comments, d.start, d.end);
+                // Sharing a line with another item: the space it was set off by
+                // goes too, so `{ --a: 1; --b: 2; }` keeps one between the rest.
+                let end = if ctx.is_at_line_start(d.start) {
+                    span.end
+                } else {
+                    span.end + spaces_at(ctx.source(), span.end)
+                };
+                (span.start, end)
+            })
+            .collect();
+        if spans.is_empty() {
+            return Ok(vec![]);
+        }
+
+        if only_whitespace_left(ctx.source(), block.body_open, block.body_close, &spans) {
+            let span = deletion_span(ctx, &comments, at.start, at.end);
+            let span = absorb_surrounding_blank_line(ctx, span);
+            return Ok(vec![Edit::delete(span.start, span.end)]);
+        }
+        Ok(spans
+            .into_iter()
+            .map(|(start, end)| Edit::delete(start, end))
+            .collect())
+    })
+}
+
+/// How many spaces and tabs `src` has from `at` on.
+fn spaces_at(src: &str, at: usize) -> usize {
+    src[at..].len() - src[at..].trim_start_matches([' ', '\t']).len()
+}
+
+/// Is `[open, close)` whitespace once `spans` -- inside it, in source order --
+/// are taken out?
+fn only_whitespace_left(src: &str, open: usize, close: usize, spans: &[(usize, usize)]) -> bool {
+    let mut at = open;
+    for &(start, end) in spans {
+        if !src[at..start.max(at)].trim().is_empty() {
+            return false;
+        }
+        at = end.max(at);
+    }
+    src[at.min(close)..close].trim().is_empty()
 }
 
 /// Read-only: is an equivalent at-rule already present?
@@ -479,6 +760,465 @@ mod tests {
     fn rejects_declarations_that_would_unbalance_the_file() {
         let err = ensure_at_rule_block("", "theme", None, "x: 1; }", ParseOptions::default());
         assert!(err.is_err());
+    }
+
+    // -- declarations inside a block at-rule ----------------------------------
+
+    fn ensure_decls(src: &str, name: &str, matching: Option<&str>, decls: &str) -> Outcome {
+        ensure_at_rule_declarations(src, name, matching, decls, ParseOptions::default()).unwrap()
+    }
+
+    const APP_THEME: &str = "@import \"tailwindcss\";\n\n@theme {\n    /* Custom font family */\n    --font-caveat: \"caveat\", cursive;\n\n    /* Brand */\n    --color-brand: #1eb0ff;\n    --color-base-border-light: red;\n}\n";
+
+    #[test]
+    fn sets_its_declarations_and_keeps_every_other_line_of_the_block() {
+        let out = ensure_decls(
+            APP_THEME,
+            "theme",
+            None,
+            "--color-base-border-light: var(--base-border-light);\n--color-primary-light: var(--primary-light);",
+        );
+        assert!(out.changed);
+        assert_eq!(
+            out.source,
+            "@import \"tailwindcss\";\n\n@theme {\n    /* Custom font family */\n    --font-caveat: \"caveat\", cursive;\n\n    /* Brand */\n    --color-brand: #1eb0ff;\n    --color-base-border-light: var(--base-border-light);\n    --color-primary-light: var(--primary-light);\n}\n"
+        );
+    }
+
+    #[test]
+    fn running_it_again_changes_nothing() {
+        let decls = "--color-base-border-light: var(--base-border-light);\n--color-primary-light: var(--primary-light);";
+        let once = ensure_decls(APP_THEME, "theme", None, decls);
+        let twice = ensure_decls(&once.source, "theme", None, decls);
+        assert!(!twice.changed);
+        assert_eq!(twice.source, once.source);
+    }
+
+    #[test]
+    fn a_declaration_already_set_is_left_alone() {
+        let out = ensure_decls(APP_THEME, "theme", None, "--color-brand: #1eb0ff;");
+        assert!(!out.changed);
+        assert_eq!(out.source, APP_THEME);
+    }
+
+    #[test]
+    fn rewrites_only_the_value_bytes_so_an_inline_comment_survives() {
+        let src = "@theme {\n  --a: 1; /* keep me */\n  --b: 2;\n}\n";
+        let out = ensure_decls(src, "theme", None, "--a: 9;");
+        assert_eq!(
+            out.source,
+            "@theme {\n  --a: 9; /* keep me */\n  --b: 2;\n}\n"
+        );
+    }
+
+    #[test]
+    fn appends_every_missing_declaration_in_order_as_one_edit() {
+        let src = "@theme {\n  --a: 1;\n}\n";
+        let out = ensure_decls(src, "theme", None, "--b: 2; --c: 3; --d: 4;");
+        assert_eq!(
+            out.source,
+            "@theme {\n  --a: 1;\n  --b: 2;\n  --c: 3;\n  --d: 4;\n}\n"
+        );
+    }
+
+    #[test]
+    fn whitespace_inside_a_value_broken_over_lines_is_not_a_change() {
+        let src = "@theme {\n  --g: var(\n      --x\n    );\n}\n";
+        let out = ensure_decls(src, "theme", None, "--g: var(--x);");
+        assert!(!out.changed);
+    }
+
+    #[test]
+    fn a_multi_line_value_keeps_its_shape_when_appended() {
+        let src = "@theme {\n    --a: 1;\n}\n";
+        let decls = "  --g: linear-gradient(\n    to right,\n    red\n  );";
+        let out = ensure_decls(src, "theme", None, decls);
+        assert_eq!(
+            out.source,
+            "@theme {\n    --a: 1;\n    --g: linear-gradient(\n      to right,\n      red\n    );\n}\n"
+        );
+        assert!(!ensure_decls(&out.source, "theme", None, decls).changed);
+    }
+
+    #[test]
+    fn a_multi_line_value_keeps_its_shape_when_it_replaces_one() {
+        let src = "@theme {\n    --g: red;\n}\n";
+        let decls = "  --g: linear-gradient(\n    to right,\n    red\n  );";
+        let out = ensure_decls(src, "theme", None, decls);
+        assert_eq!(
+            out.source,
+            "@theme {\n    --g: linear-gradient(\n      to right,\n      red\n    );\n}\n"
+        );
+        assert!(!ensure_decls(&out.source, "theme", None, decls).changed);
+    }
+
+    #[test]
+    fn inserts_the_whole_block_verbatim_when_there_is_none() {
+        let out = ensure_decls(
+            "@import \"tailwindcss\";\n",
+            "theme",
+            None,
+            "--a: 1;\n\n/* group */\n--b: 2;",
+        );
+        assert_eq!(
+            out.source,
+            "@import \"tailwindcss\";\n@theme {\n  --a: 1;\n\n  /* group */\n  --b: 2;\n}\n"
+        );
+    }
+
+    #[test]
+    fn narrows_to_a_matching_target_and_leaves_its_siblings_alone() {
+        let src = "@plugin \"a\" {\n  x: 1;\n}\n@plugin \"b\" {\n  x: 1;\n}\n";
+        let out = ensure_decls(src, "plugin", Some("\"b\""), "x: 2; y: 3;");
+        assert_eq!(
+            out.source,
+            "@plugin \"a\" {\n  x: 1;\n}\n@plugin \"b\" {\n  x: 2;\n  y: 3;\n}\n"
+        );
+    }
+
+    #[test]
+    fn keeps_a_nested_block_whole_and_appends_after_it() {
+        let src =
+            "@theme {\n  --animate-w: w 1s;\n  @keyframes w {\n    50% { opacity: 0; }\n  }\n}\n";
+        let out = ensure_decls(src, "theme", None, "--a: 1;");
+        assert_eq!(
+            out.source,
+            "@theme {\n  --animate-w: w 1s;\n  @keyframes w {\n    50% { opacity: 0; }\n  }\n  --a: 1;\n}\n"
+        );
+    }
+
+    #[test]
+    fn a_semicolon_inside_a_value_ends_nothing() {
+        let src = "@theme {\n  --a: 1;\n}\n";
+        let decls = "--bg: url(\"data:image/svg+xml;utf8,<svg/>\"); --c: \"a;b\";";
+        let out = ensure_decls(src, "theme", None, decls);
+        assert_eq!(
+            out.source,
+            "@theme {\n  --a: 1;\n  --bg: url(\"data:image/svg+xml;utf8,<svg/>\");\n  --c: \"a;b\";\n}\n"
+        );
+    }
+
+    #[test]
+    fn a_property_given_twice_is_set_once_at_its_last_value() {
+        let out = ensure_decls("@theme {\n  --a: 1;\n}\n", "theme", None, "--b: 1; --b: 2;");
+        assert_eq!(out.source, "@theme {\n  --a: 1;\n  --b: 2;\n}\n");
+    }
+
+    #[test]
+    fn the_last_of_a_property_the_block_repeats_is_the_one_set() {
+        let src = "@theme {\n  --a: 1;\n  --a: 2;\n}\n";
+        let out = ensure_decls(src, "theme", None, "--a: 3;");
+        assert_eq!(out.source, "@theme {\n  --a: 1;\n  --a: 3;\n}\n");
+    }
+
+    #[test]
+    fn custom_properties_are_matched_case_sensitively() {
+        let src = "@theme {\n  --Brand: red;\n}\n";
+        let out = ensure_decls(src, "theme", None, "--brand: blue;");
+        assert_eq!(
+            out.source,
+            "@theme {\n  --Brand: red;\n  --brand: blue;\n}\n"
+        );
+    }
+
+    #[test]
+    fn sets_and_clears_the_important_flag_as_written() {
+        let src = "@plugin \"p\" {\n  a: 1;\n  b: 2 !important;\n}\n";
+        let out = ensure_decls(src, "plugin", Some("p"), "a: 1 !important; b: 2;");
+        assert_eq!(
+            out.source,
+            "@plugin \"p\" {\n  a: 1 !important;\n  b: 2;\n}\n"
+        );
+    }
+
+    #[test]
+    fn declarations_keep_a_single_line_block_on_one_line() {
+        let out = ensure_decls("@theme { --a: 1; }\n", "theme", None, "--b: 2;");
+        assert_eq!(out.source, "@theme { --a: 1; --b: 2; }\n");
+    }
+
+    #[test]
+    fn fills_an_empty_block() {
+        let out = ensure_decls("@theme {\n}\n", "theme", None, "--a: 1; --b: 2;");
+        assert_eq!(out.source, "@theme {\n  --a: 1;\n  --b: 2;\n}\n");
+    }
+
+    #[test]
+    fn declarations_use_the_files_newline_style() {
+        let src = "@theme {\r\n  --a: 1;\r\n}\r\n";
+        let out = ensure_decls(src, "theme", None, "--b: 2; --c: 3;");
+        assert_eq!(
+            out.source,
+            "@theme {\r\n  --a: 1;\r\n  --b: 2;\r\n  --c: 3;\r\n}\r\n"
+        );
+    }
+
+    #[test]
+    fn terminates_a_last_declaration_written_without_a_semicolon() {
+        let out = ensure_decls("@theme {\n  --a: 1\n}\n", "theme", None, "--b: 2;");
+        assert_eq!(out.source, "@theme {\n  --a: 1;\n  --b: 2;\n}\n");
+    }
+
+    #[test]
+    fn refuses_what_is_not_a_plain_list_of_declarations() {
+        for decls in [
+            ".x { color: red; }",
+            "@media print { a: 1; }",
+            "color red;",
+            "--a: 1; }",
+        ] {
+            assert!(
+                ensure_at_rule_declarations(
+                    "@theme {\n}\n",
+                    "theme",
+                    None,
+                    decls,
+                    ParseOptions::default()
+                )
+                .is_err(),
+                "accepted {decls:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_to_give_declarations_to_a_statement_at_rule() {
+        let err = ensure_at_rule_declarations(
+            "@source \"../js\";\n",
+            "source",
+            None,
+            "x: 1;",
+            ParseOptions::default(),
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn declarations_reject_an_empty_name() {
+        assert!(
+            ensure_at_rule_declarations("", "@", None, "x: 1;", ParseOptions::default()).is_err()
+        );
+    }
+
+    #[test]
+    fn leaves_the_rest_of_the_stylesheet_byte_for_byte() {
+        let src =
+            "/* head */\n@import \"a\";\n@theme {\n  --a: 1;\n}\n.btn { color: red; } /* tail */\n";
+        let out = ensure_decls(src, "theme", None, "--a: 2;");
+        assert_eq!(out.source, src.replace("--a: 1;", "--a: 2;"));
+    }
+
+    // -- removing declarations from a block at-rule --------------------------
+
+    fn remove_decls(src: &str, name: &str, matching: Option<&str>, decls: &str) -> Outcome {
+        remove_at_rule_declarations(src, name, matching, decls, ParseOptions::default()).unwrap()
+    }
+
+    const PROJECT_THEME: &str = "@import \"tailwindcss\";\n\n@theme {\n    /* Custom font family */\n    --font-caveat: \"caveat\", cursive;\n\n    /* Brand */\n    --color-brand: #1eb0ff;\n}\n";
+    const LIBRARY_TOKENS: &str =
+        "--color-a-light: var(--a-light);\n--color-b-light: var(\n    --b-light\n);";
+
+    #[test]
+    fn removing_what_was_set_gives_the_projects_block_back() {
+        let set = ensure_decls(PROJECT_THEME, "theme", None, LIBRARY_TOKENS);
+        assert!(set.source.contains("--color-b-light"));
+        let out = remove_decls(&set.source, "theme", None, LIBRARY_TOKENS);
+        assert!(out.changed);
+        assert_eq!(out.source, PROJECT_THEME);
+    }
+
+    #[test]
+    fn removing_what_was_inserted_gives_the_file_back() {
+        for src in [
+            "@import \"tailwindcss\";\n",
+            "@import \"tailwindcss\";\n\n.btn {\n  color: red;\n}\n",
+            "@import \"tailwindcss\";\n@plugin \"x\";\n\n@layer base {\n  a { color: red; }\n}\n",
+            ".btn { color: red; }\n",
+            "",
+        ] {
+            let set = ensure_decls(src, "theme", Some(""), LIBRARY_TOKENS);
+            assert!(set.source.contains("@theme {"), "{src:?}");
+            let out = remove_decls(&set.source, "theme", Some(""), LIBRARY_TOKENS);
+            assert_eq!(out.source, src, "{src:?}");
+        }
+    }
+
+    #[test]
+    fn keeps_a_declaration_whose_value_was_changed() {
+        let src = "@theme {\n  --a: red;\n  --b: 2;\n}\n";
+        let out = remove_decls(src, "theme", None, "--a: var(--a); --b: 2;");
+        assert_eq!(out.source, "@theme {\n  --a: red;\n}\n");
+    }
+
+    #[test]
+    fn compares_values_token_for_token() {
+        let src = "@theme {\n  --keep: 1;\n  --a: var(\n      --a\n  );\n}\n";
+        let out = remove_decls(src, "theme", None, "--a: var(--a);");
+        assert_eq!(out.source, "@theme {\n  --keep: 1;\n}\n");
+    }
+
+    #[test]
+    fn important_must_match_too() {
+        let src = "@theme {\n  --a: 1 !important;\n  --b: 2;\n}\n";
+        assert!(!remove_decls(src, "theme", None, "--a: 1;").changed);
+        let out = remove_decls(src, "theme", None, "--a: 1 !important;");
+        assert_eq!(out.source, "@theme {\n  --b: 2;\n}\n");
+    }
+
+    #[test]
+    fn a_removed_declaration_takes_the_comments_it_owns() {
+        let src = "@theme {\n  /* ===== tokens ===== */\n  --keep: 1;\n\n  /* about the block */\n\n  /* ours */\n  --a: 1; /* trailing */\n}\n";
+        let out = remove_decls(src, "theme", None, "--a: 1;");
+        assert_eq!(
+            out.source,
+            "@theme {\n  /* ===== tokens ===== */\n  --keep: 1;\n\n  /* about the block */\n\n}\n"
+        );
+    }
+
+    #[test]
+    fn a_block_with_a_comment_left_stays() {
+        let src = "@theme {\n  /* tokens */\n\n  --a: 1;\n}\n";
+        let out = remove_decls(src, "theme", None, "--a: 1;");
+        assert_eq!(out.source, "@theme {\n  /* tokens */\n\n}\n");
+    }
+
+    #[test]
+    fn a_block_left_empty_goes_with_the_comments_it_owns() {
+        let src = "@import \"x\";\n\n/* library tokens */\n@theme {\n  --a: 1;\n  /* b */\n  --b: 2;\n}\n\n.btn { color: red; }\n";
+        let out = remove_decls(src, "theme", None, "--a: 1; --b: 2;");
+        assert_eq!(out.source, "@import \"x\";\n\n.btn { color: red; }\n");
+    }
+
+    #[test]
+    fn a_block_with_a_nested_rule_left_stays() {
+        let src = "@theme {\n  --a: 1;\n  @keyframes spin {\n    to { rotate: 360deg; }\n  }\n}\n";
+        let out = remove_decls(src, "theme", None, "--a: 1;");
+        assert_eq!(
+            out.source,
+            "@theme {\n  @keyframes spin {\n    to { rotate: 360deg; }\n  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn removes_every_copy_that_is_still_the_one_given() {
+        let src = "@theme {\n  --a: 1;\n  --a: 2;\n  --a: 1;\n}\n";
+        let out = remove_decls(src, "theme", None, "--a: 1;");
+        assert_eq!(out.source, "@theme {\n  --a: 2;\n}\n");
+    }
+
+    #[test]
+    fn a_single_line_block_keeps_one_space_between_what_is_left() {
+        let src = "@theme { --a: 1; --b: 2; --c: 3; }\n";
+        assert_eq!(
+            remove_decls(src, "theme", None, "--a: 1;").source,
+            "@theme { --b: 2; --c: 3; }\n"
+        );
+        assert_eq!(
+            remove_decls(src, "theme", None, "--b: 2;").source,
+            "@theme { --a: 1; --c: 3; }\n"
+        );
+        assert_eq!(
+            remove_decls(src, "theme", None, "--c: 3;").source,
+            "@theme { --a: 1; --b: 2; }\n"
+        );
+        assert_eq!(
+            remove_decls(src, "theme", None, "--a: 1; --b: 2; --c: 3;").source,
+            ""
+        );
+    }
+
+    #[test]
+    fn removing_uses_the_files_newline_style() {
+        let src = "@theme {\r\n  --keep: 1;\r\n  --a: 1;\r\n}\r\n";
+        let out = remove_decls(src, "theme", None, "--a: 1;");
+        assert_eq!(out.source, "@theme {\r\n  --keep: 1;\r\n}\r\n");
+    }
+
+    #[test]
+    fn matching_names_the_block_to_remove_from() {
+        let src = "@theme inline {\n  --a: 1;\n}\n\n@theme {\n  --a: 1;\n}\n";
+        assert_eq!(
+            remove_decls(src, "theme", Some(""), "--a: 1;").source,
+            "@theme inline {\n  --a: 1;\n}\n"
+        );
+        assert_eq!(
+            remove_decls(src, "theme", Some("inline"), "--a: 1;").source,
+            "@theme {\n  --a: 1;\n}\n"
+        );
+    }
+
+    #[test]
+    fn nothing_to_remove_is_no_change() {
+        for (src, decls) in [
+            ("@import \"x\";\n", "--a: 1;"),
+            ("@theme {\n  --b: 2;\n}\n", "--a: 1;"),
+            ("@theme {\n}\n", "--a: 1;"),
+            ("@source \"../js\";\n", "--a: 1;"),
+        ] {
+            let name = if src.starts_with("@source") {
+                "source"
+            } else {
+                "theme"
+            };
+            let out = remove_decls(src, name, None, decls);
+            assert!(!out.changed, "{src:?}");
+            assert_eq!(out.source, src);
+        }
+    }
+
+    #[test]
+    fn removing_twice_is_removing_once() {
+        let set = ensure_decls(PROJECT_THEME, "theme", None, LIBRARY_TOKENS);
+        let once = remove_decls(&set.source, "theme", None, LIBRARY_TOKENS);
+        let twice = remove_decls(&once.source, "theme", None, LIBRARY_TOKENS);
+        assert!(!twice.changed);
+        assert_eq!(twice.source, once.source);
+    }
+
+    #[test]
+    fn removing_leaves_the_rest_of_the_stylesheet_byte_for_byte() {
+        let src = "/* head */\n@import \"a\";\n@theme {\n  --keep: 1;\n  --a: 1;\n}\n.btn { color: red; } /* tail */\n";
+        let out = remove_decls(src, "theme", None, "--a: 1;");
+        assert_eq!(out.source, src.replace("  --a: 1;\n", ""));
+    }
+
+    #[test]
+    fn removing_refuses_what_is_not_a_plain_list_of_declarations() {
+        for decls in [
+            ".x { color: red; }",
+            "@media print { a: 1; }",
+            "color red;",
+            "--a: 1; }",
+        ] {
+            assert!(
+                remove_at_rule_declarations(
+                    "@theme {\n  --a: 1;\n}\n",
+                    "theme",
+                    None,
+                    decls,
+                    ParseOptions::default()
+                )
+                .is_err(),
+                "accepted {decls:?}"
+            );
+        }
+        assert!(
+            remove_at_rule_declarations("", "@", None, "x: 1;", ParseOptions::default()).is_err()
+        );
+    }
+
+    #[test]
+    fn an_empty_matching_is_an_at_rule_with_nothing_after_its_name() {
+        let src = "@theme inline {\n  --font: x;\n}\n";
+        let out = ensure_decls(src, "theme", Some(""), "--a: 1;");
+        assert!(out.source.starts_with(src), "{:?}", out.source);
+        assert!(
+            out.source.contains("@theme {\n  --a: 1;\n}"),
+            "{:?}",
+            out.source
+        );
+        let again = ensure_decls(&out.source, "theme", Some(""), "--a: 1;");
+        assert!(!again.changed);
     }
 
     // -- spec parsing -------------------------------------------------------
@@ -667,6 +1407,12 @@ mod tests {
     }
 
     // -- removal ------------------------------------------------------------
+
+    #[test]
+    fn removing_the_last_at_rule_leaves_no_blank_line_at_the_end() {
+        let o = remove("@import \"a\";\n\n@plugin \"x\";\n", "plugin", None);
+        assert_eq!(o.source, "@import \"a\";\n");
+    }
 
     #[test]
     fn removes_a_matching_at_rule() {

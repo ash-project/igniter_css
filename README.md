@@ -26,7 +26,7 @@ else.
 ## Installation
 
 ```elixir
-{:igniter_css, "~> 1.0.0", only: [:dev, :test]}
+{:igniter_css, "~> 1.1.0", only: [:dev, :test]}
 ```
 
 Precompiled NIFs ship for the standard target matrix, so no Rust toolchain is
@@ -103,6 +103,7 @@ Callers get Igniter's normal diff preview and confirmation flow.
 | | |
 |---|---|
 | `ensure_at_rule/3`, `remove_at_rule/4` | `@import`, `@plugin`, `@source`, `@layer`, … |
+| `ensure_at_rule_block/5`, `ensure_at_rule_declarations/5`, `remove_at_rule_declarations/5` | at-rule blocks: a whole body, or only the declarations you own in a shared one such as `@theme` |
 | `add_import/4`, `remove_import/3` | `@import` convenience wrappers |
 | `ensure_rule/4`, `remove_rule/3` | whole rules |
 | `replace_rule_body/4`, `append_raw_to_rule/4` | rule bodies |

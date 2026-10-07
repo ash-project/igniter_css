@@ -114,6 +114,60 @@ defmodule IgniterCss.CodemodsTest do
     end
   end
 
+  describe "ensure_at_rule_declarations/6" do
+    test "sets its declarations in a shared block and keeps the project's own" do
+      result =
+        ~s|@theme {\n  --font-caveat: "caveat";\n  --color-a: red;\n}\n|
+        |> igniter_with()
+        |> Codemods.ensure_at_rule_declarations(
+          @path,
+          "theme",
+          "--color-a: blue; --color-b: green;"
+        )
+        |> content()
+
+      assert result ==
+               ~s|@theme {\n  --font-caveat: "caveat";\n  --color-a: blue;\n  --color-b: green;\n}\n|
+    end
+
+    test "re-running leaves the file untouched" do
+      source = ~s|@theme {\n  --font-caveat: "caveat";\n  --color-a: blue;\n}\n|
+
+      result =
+        source
+        |> igniter_with()
+        |> Codemods.ensure_at_rule_declarations(@path, "theme", "--color-a: blue;")
+        |> content()
+
+      assert result == source
+    end
+  end
+
+  describe "remove_at_rule_declarations/6" do
+    test "takes back its declarations and keeps the project's own" do
+      result =
+        ~s|@theme {\n  --font-caveat: "caveat";\n  --color-a: blue;\n  --color-b: green;\n}\n|
+        |> igniter_with()
+        |> Codemods.remove_at_rule_declarations(
+          @path,
+          "theme",
+          "",
+          "--color-a: blue; --color-b: green;"
+        )
+        |> content()
+
+      assert result == ~s|@theme {\n  --font-caveat: "caveat";\n}\n|
+    end
+
+    test "a stylesheet it cannot read stops the installer and names the file" do
+      assert_raise RuntimeError, ~r/remove_at_rule_declarations "theme" failed on #{@path}/, fn ->
+        ".a { color: red;\n"
+        |> igniter_with()
+        |> Codemods.remove_at_rule_declarations(@path, "theme", "", "--a: 1;")
+      end
+    end
+  end
+
   describe "ensure_rule/5 and set_declaration/6" do
     test "a full installer run produces the expected file" do
       result =

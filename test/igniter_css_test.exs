@@ -102,6 +102,35 @@ defmodule IgniterCssTest do
     test "removing something absent is a no-op" do
       assert {:ok, %Outcome{changed: false}} = IgniterCss.remove_at_rule(".x {}\n", "import", "a")
     end
+
+    test "keeps the comment the file opens with" do
+      css = ~s|/* the app's stylesheet */\n@import "a";\n@import "b";\n|
+
+      assert {:ok, %Outcome{source: out}} = IgniterCss.remove_at_rule(css, "import", "a")
+      assert out == ~s|/* the app's stylesheet */\n@import "b";\n|
+    end
+
+    test "the last at-rule leaves no blank line at the end of the file" do
+      css = ~s|@import "a";\n\n@plugin "x";\n|
+
+      assert {:ok, %Outcome{source: ~s|@import "a";\n|}} =
+               IgniterCss.remove_at_rule(css, "plugin")
+    end
+
+    test "takes out what ensure_at_rule put in, and every fixture comes back" do
+      for {name, css} <- fixtures() do
+        case IgniterCss.ensure_at_rule(css, ~s|@plugin "mishka-probe";|) do
+          {:ok, added} ->
+            assert {:ok, %Outcome{source: back}} =
+                     IgniterCss.remove_at_rule(added.source, "plugin", "mishka-probe")
+
+            assert back == css, "#{name}: the file did not come back"
+
+          {:error, reason} ->
+            assert is_binary(reason), "#{name}: #{inspect(reason)}"
+        end
+      end
+    end
   end
 
   describe "has_at_rule?/3" do

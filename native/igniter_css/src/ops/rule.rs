@@ -59,6 +59,40 @@ fn body_items(rule: &RuleRef) -> Vec<biome_css_syntax::CssSyntaxNode> {
 /// Honours rules B and C: the new line copies the indentation of the sibling it
 /// lands next to, and a rule written entirely on one line stays on one line.
 pub fn append_to_body(ctx: &ParseCtx, rule: &RuleRef, text: &str) -> Vec<Edit> {
+    append_with(ctx, rule, text, |_indent| text.to_string())
+}
+
+/// [`append_to_body`] for several items, appended in order as one edit -- two
+/// insertions at the same offset would be ambiguous. Each item is re-indented
+/// to the sibling it lands next to and keeps its own relative nesting, so a
+/// value broken over several lines keeps its shape.
+pub fn append_all_to_body(ctx: &ParseCtx, rule: &RuleRef, items: &[String]) -> Vec<Edit> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let nl = ctx.nl();
+    append_with(ctx, rule, &items.join(" "), |indent| {
+        let lines = items
+            .iter()
+            .map(|item| reindent(item, indent, nl))
+            .collect::<Vec<_>>()
+            .join(nl);
+        // The caller's format puts the first line's indentation in front.
+        lines
+            .strip_prefix(indent)
+            .map_or_else(|| lines.clone(), str::to_string)
+    })
+}
+
+/// The shared tail of the two appends: `single_line` is the text for a rule
+/// written on one line, `render` the text after the first line's indentation
+/// otherwise.
+fn append_with(
+    ctx: &ParseCtx,
+    rule: &RuleRef,
+    single_line_text: &str,
+    render: impl Fn(&str) -> String,
+) -> Vec<Edit> {
     let nl = ctx.nl();
     let rule_indent = ctx.indent_at(rule.start).to_string();
     let single_line = !ctx.source()[rule.start..rule.end].contains('\n');
@@ -66,9 +100,10 @@ pub fn append_to_body(ctx: &ParseCtx, rule: &RuleRef, text: &str) -> Vec<Edit> {
 
     if items.is_empty() {
         let replacement = if single_line {
-            format!(" {text} ")
+            format!(" {single_line_text} ")
         } else {
-            format!("{nl}{rule_indent}{}{text}{nl}{rule_indent}", ctx.indent())
+            let indent = format!("{rule_indent}{}", ctx.indent());
+            format!("{nl}{indent}{}{nl}{rule_indent}", render(&indent))
         };
         return vec![Edit::replace(rule.body_open, rule.body_close, replacement)];
     }
@@ -80,7 +115,7 @@ pub fn append_to_body(ctx: &ParseCtx, rule: &RuleRef, text: &str) -> Vec<Edit> {
         return vec![Edit::replace(
             rule.body_open,
             rule.body_close,
-            text.to_string(),
+            single_line_text.to_string(),
         )];
     };
     let last_start = usize::from(last.text_trimmed_range().start());
@@ -106,9 +141,9 @@ pub fn append_to_body(ctx: &ParseCtx, rule: &RuleRef, text: &str) -> Vec<Edit> {
         format!("{rule_indent}{}", ctx.indent())
     };
     let tail = if single_line {
-        format!(" {text}")
+        format!(" {single_line_text}")
     } else {
-        format!("{nl}{indent}{text}")
+        format!("{nl}{indent}{}", render(&indent))
     };
 
     if after == last_end {

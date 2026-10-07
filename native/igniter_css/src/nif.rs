@@ -218,6 +218,52 @@ fn ensure_at_rule_block_nif(
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
+fn ensure_at_rule_declarations_nif(
+    env: Env,
+    source: String,
+    name: String,
+    matching: Option<String>,
+    declarations: String,
+    opts: ExParseOpts,
+) -> NifResult<Term> {
+    respond!(
+        env,
+        atoms::ensure_at_rule_declarations_nif(),
+        at_rule::ensure_at_rule_declarations(
+            &source,
+            &name,
+            matching.as_deref(),
+            &declarations,
+            opts.into()
+        )
+        .map(ExOutcome::from)
+    )
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn remove_at_rule_declarations_nif(
+    env: Env,
+    source: String,
+    name: String,
+    matching: Option<String>,
+    declarations: String,
+    opts: ExParseOpts,
+) -> NifResult<Term> {
+    respond!(
+        env,
+        atoms::remove_at_rule_declarations_nif(),
+        at_rule::remove_at_rule_declarations(
+            &source,
+            &name,
+            matching.as_deref(),
+            &declarations,
+            opts.into()
+        )
+        .map(ExOutcome::from)
+    )
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
 fn has_at_rule_nif(env: Env, source: String, line: String, opts: ExParseOpts) -> NifResult<Term> {
     respond!(
         env,

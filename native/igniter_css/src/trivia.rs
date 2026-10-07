@@ -12,11 +12,13 @@
 //! | own line directly above, no blank line between     | deleted   |
 //! | separated from the node by a blank line            | **kept**  |
 //! | looks like a section header                        | **kept**  |
+//! | opens the file                                     | **kept**  |
 //!
 //! A section header is a comment that spans more than one line, or that
 //! contains a rule of three or more repeated `= - * # ~ _` characters. Those
 //! read as headings for everything below them, not as documentation of the one
-//! node that happens to follow.
+//! node that happens to follow. A comment the file opens with is the file's
+//! own -- and a node inserted at the top lands right under it.
 
 use crate::ctx::ParseCtx;
 
@@ -134,7 +136,7 @@ pub fn deletion_span(
             if !is_blank(&src[c_line_start..c_start]) {
                 break;
             }
-            if is_section_header(&src[c_start..c_end]) {
+            if is_section_header(&src[c_start..c_end]) || opens_the_file(src, c_start) {
                 break;
             }
             s = c_line_start;
@@ -142,6 +144,14 @@ pub fn deletion_span(
     }
 
     DeleteSpan { start: s, end: e }
+}
+
+/// Is the comment at `start` the first thing in the file, a BOM aside?
+fn opens_the_file(src: &str, start: usize) -> bool {
+    src[..start]
+        .trim_start_matches('\u{feff}')
+        .chars()
+        .all(char::is_whitespace)
 }
 
 /// Collapse a run of blank lines left behind by a deletion down to one.
@@ -164,18 +174,27 @@ pub fn absorb_surrounding_blank_line(ctx: &ParseCtx, span: DeleteSpan) -> Delete
         is_blank(src[prev_start..span.start].trim_end_matches('\n'))
     };
 
+    let mut start = span.start;
     if before_is_blank {
         // Drop one following blank line so we don't stack two.
         let next_end = ctx.line_end_inclusive(end);
         if next_end > end && is_blank(src[end..next_end].trim_end_matches('\n')) {
             end = next_end;
         }
+        // Nothing follows: the blank lines before would end the file, so they
+        // go too.
+        if end == src.len() {
+            while start > 0 {
+                let prev_start = ctx.line_start(start - 1);
+                if !is_blank(src[prev_start..start].trim_end_matches('\n')) {
+                    break;
+                }
+                start = prev_start;
+            }
+        }
     }
 
-    DeleteSpan {
-        start: span.start,
-        end,
-    }
+    DeleteSpan { start, end }
 }
 
 #[cfg(test)]
@@ -366,5 +385,38 @@ mod tests {
         let span = absorb_surrounding_blank_line(&ctx, span);
         let out = format!("{}{}", &src[..span.start], &src[span.end..]);
         assert_eq!(out, ".a {}\n.c {}\n");
+    }
+
+    #[test]
+    fn the_comment_the_file_opens_with_is_kept() {
+        for src in [
+            "/* the app's stylesheet */\n.b {}\n.a {}\n",
+            "\u{feff}/* with a BOM */\n.b {}\n.a {}\n",
+            "\n  /* indented */\n.b {}\n.a {}\n",
+        ] {
+            let ctx = ParseCtx::parse_default(src);
+            let comments = comment_ranges(&ctx);
+            let rule = find_rule_by_selector(&ctx, ".b").one().unwrap();
+            let span = deletion_span(&ctx, &comments, rule.start, rule.end);
+            assert_eq!(&ctx.source()[span.start..span.end], ".b {}\n", "{src:?}");
+        }
+    }
+
+    #[test]
+    fn the_blank_lines_before_a_deletion_at_the_end_go_too() {
+        for (src, expected) in [
+            (".a {}\n\n.b {}\n", ".a {}\n"),
+            (".a {}\n\n\n.b {}", ".a {}\n"),
+            (".a {}\r\n\r\n.b {}\r\n", ".a {}\r\n"),
+            ("\n.b {}\n", ""),
+        ] {
+            let ctx = ParseCtx::parse_default(src);
+            let comments = comment_ranges(&ctx);
+            let rule = find_rule_by_selector(&ctx, ".b").one().unwrap();
+            let span = deletion_span(&ctx, &comments, rule.start, rule.end);
+            let span = absorb_surrounding_blank_line(&ctx, span);
+            let out = format!("{}{}", &src[..span.start], &src[span.end..]);
+            assert_eq!(out, expected, "{src:?}");
+        }
     }
 }

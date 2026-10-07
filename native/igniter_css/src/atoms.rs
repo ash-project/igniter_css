@@ -11,6 +11,8 @@ rustler::atoms! {
     // the result with the operation that produced it.
     ensure_at_rule_nif,
     ensure_at_rule_block_nif,
+    ensure_at_rule_declarations_nif,
+    remove_at_rule_declarations_nif,
     remove_at_rule_nif,
     has_at_rule_nif,
     add_import_nif,
