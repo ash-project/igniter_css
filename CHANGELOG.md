@@ -61,6 +61,19 @@ SPDX-License-Identifier: MIT
 - feat(css): add CSS parser with AST transformation support
  [#1](https://github.com/ash-project/igniter_css/pull/1)
 
+## [v1.1.0](https://github.com/ash-project/igniter_css/compare/v1.0.0...v1.1.0) (2026-10-07)
+
+
+
+
+### Features:
+
+* ensure_at_rule_declarations/5 and remove_at_rule_declarations/5 for a shared at-rule block by Shahryar Tavakkoli
+
+### Bug Fixes:
+
+* a deletion keeps the comment the file opens with, and leaves no blank line at its end by Shahryar Tavakkoli
+
 ## [v1.0.0](https://github.com/ash-project/igniter_css/compare/v0.2.0...v1.0.0) (2026-09-06)
 ### Breaking Changes:
 
