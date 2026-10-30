@@ -20,11 +20,16 @@ crate-type = ["cdylib", "rlib"]
 # guarantee, and they churn between patch releases. Pinned with `=` on purpose:
 # upgrading is a deliberate, tested activity, never a `cargo update`.
 #
-# 0.5.8 is the newest published version of all three, and it is reachable only
-# because this crate does not depend on biome_css_formatter. That crate is stuck
-# at 0.5.7 and requires biome_css_syntax ^0.5.7 and biome_rowan ^0.5.7, so
-# adding it would drag the whole graph back a release -- which is exactly why
-# igniter_js, which does format CSS, pins its entire biome set to 0.5.7.
+# 0.5.8 is the newest published version of biome_css_parser and biome_css_syntax,
+# and the newest biome_rowan they accept (both require biome_rowan ^0.5.7).
+# biome_rowan 0.7.0 is published, but pairing it with them puts two incompatible
+# rowan versions in the graph and the crate no longer compiles.
+#
+# 0.5.8 is reachable only because this crate does not depend on
+# biome_css_formatter. That crate is stuck at 0.5.7 and requires biome_css_syntax
+# ^0.5.7 and biome_rowan ^0.5.7, so adding it would drag the whole graph back a
+# release -- which is exactly why igniter_js, which does format CSS, pins its
+# entire biome set to 0.5.7.
 #
 # We do not format: IgniterCss.Transform::beautify is a byte-preserving
 # pretty-printer written against the CST. Keep it that way, or this pin drops.
@@ -34,7 +39,7 @@ biome_rowan = "=0.5.8"
 rustler = "=0.38.0"
 
 [dev-dependencies]
-proptest = "1"
+proptest = "1.12"
 
 [profile.release]
 lto = false
