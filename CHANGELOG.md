@@ -61,6 +61,11 @@ SPDX-License-Identifier: MIT
 - feat(css): add CSS parser with AST transformation support
  [#1](https://github.com/ash-project/igniter_css/pull/1)
 
+## [v1.1.1](https://github.com/ash-project/igniter_css/compare/v1.1.0...v1.1.1) (2026-10-30)
+
+
+
+
 ## [v1.1.0](https://github.com/ash-project/igniter_css/compare/v1.0.0...v1.1.0) (2026-10-07)
 
 
