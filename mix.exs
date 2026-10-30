@@ -113,7 +113,9 @@ defmodule IgniterCss.MixProject do
   defp deps do
     [
       {:rustler, "~> 0.38.0", optional: true},
-      {:rustler_precompiled, "~> 0.9"},
+      # 0.10.1 raises :httpc's max_header_size. Older releases fail to download the
+      # precompiled NIF on OTP 29.0.6+ with {:header_too_long, {:max, 10240}}.
+      {:rustler_precompiled, "~> 0.10 and >= 0.10.1"},
       {:igniter, "~> 0.8.3", optional: true},
       {:mix_audit, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:sobelow, ">= 0.0.0", only: [:dev, :test], runtime: false},
