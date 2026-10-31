@@ -839,6 +839,163 @@ pub fn all_comments(ctx: &ParseCtx) -> Vec<(usize, usize, String)> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Errors the parser raises against valid CSS, and errors it does not raise
+// ---------------------------------------------------------------------------
+
+/// Byte offset of the `}` that closes `rule`'s own block, or `None` when the
+/// block is never closed.
+pub fn closing_brace(rule: &RuleRef) -> Option<usize> {
+    let block = block_child(&rule.node)?;
+    block
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| t.kind() == CssSyntaxKind::R_CURLY)
+        .map(|t| usize::from(t.text_trimmed_range().start()))
+}
+
+/// The smallest node whose range covers `start..end`.
+fn covering_node(ctx: &ParseCtx, start: usize, end: usize) -> Option<CssSyntaxNode> {
+    let start = u32::try_from(start).ok()?;
+    let end = u32::try_from(end).ok()?;
+    let range = TextRange::new(start.into(), end.into());
+    if !ctx.syntax().text_range().contains_range(range) {
+        return None;
+    }
+    match ctx.syntax().covering_element(range) {
+        biome_rowan::SyntaxElement::Node(node) => Some(node),
+        biome_rowan::SyntaxElement::Token(token) => token.parent(),
+    }
+}
+
+/// Is `start..end` inside a declaration value whose grammar is any run of
+/// tokens, where Biome 0.5.8 raises an error the specification does not?
+///
+/// * A custom property's value, `--x: a:b`: CSS Custom Properties takes any
+///   tokens there, a `:` included. Biome reads it as an ordinary value and
+///   refuses the colon.
+/// * A legacy `progid:` filter, `filter: progid:DXImageTransform…(…)`, which old
+///   Internet Explorer read and vendored stylesheets such as Bootstrap 3 still
+///   carry.
+///
+/// Only while every `(`, `[` and `{` in the value is closed inside it. The
+/// specification reads an open one to its match, braces included, so it
+/// swallows everything after it; Biome ends the declaration at the next `;`
+/// instead, and the value would look harmless here when it is not.
+pub fn in_free_form_value(ctx: &ParseCtx, start: usize, end: usize) -> bool {
+    let Some(node) = covering_node(ctx, start, end) else {
+        return false;
+    };
+    let Some(property) = node.ancestors().find(|n| {
+        matches!(
+            n.kind(),
+            CssSyntaxKind::CSS_GENERIC_PROPERTY | CssSyntaxKind::CSS_BOGUS_PROPERTY
+        )
+    }) else {
+        return false;
+    };
+    let Some(colon) = property
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| t.kind() == CssSyntaxKind::COLON)
+    else {
+        return false;
+    };
+    let value_start = usize::from(colon.text_trimmed_range().end());
+    if start < value_start {
+        return false;
+    }
+
+    let value: Vec<_> = property
+        .descendants_tokens(Direction::Next)
+        .filter(|t| usize::from(t.text_trimmed_range().start()) >= value_start)
+        .collect();
+    let custom = property
+        .first_child()
+        .is_some_and(|name| name.kind() == CssSyntaxKind::CSS_DASHED_IDENTIFIER);
+    let progid = matches!(
+        value.as_slice(),
+        [first, second, ..]
+            if first.text_trimmed().eq_ignore_ascii_case("progid")
+                && second.kind() == CssSyntaxKind::COLON
+    );
+
+    (custom || progid) && brackets_close(&value)
+}
+
+/// Does every `(`, `[` and `{` among `tokens` meet its own closer, in order?
+fn brackets_close(tokens: &[biome_rowan::SyntaxToken<biome_css_syntax::CssLanguage>]) -> bool {
+    let mut open: Vec<CssSyntaxKind> = Vec::new();
+    for token in tokens {
+        match token.kind() {
+            CssSyntaxKind::L_PAREN => open.push(CssSyntaxKind::R_PAREN),
+            CssSyntaxKind::L_BRACK => open.push(CssSyntaxKind::R_BRACK),
+            CssSyntaxKind::L_CURLY => open.push(CssSyntaxKind::R_CURLY),
+            kind @ (CssSyntaxKind::R_PAREN | CssSyntaxKind::R_BRACK | CssSyntaxKind::R_CURLY)
+                if open.pop() != Some(kind) =>
+            {
+                return false
+            }
+            _ => {}
+        }
+    }
+    open.is_empty()
+}
+
+/// Is `start..end` a `;` the parser refused as an item of a block?
+///
+/// CSS Syntax skips a `;` among a block's contents however many stand
+/// together. Biome 0.5.8 takes one empty declaration (`a;;`) and raises an
+/// error on the next (`a;;;`).
+pub fn is_stray_semicolon(ctx: &ParseCtx, start: usize, end: usize) -> bool {
+    let Some(node) = covering_node(ctx, start, end) else {
+        return false;
+    };
+    let in_block = node.parent().is_some_and(|p| {
+        matches!(
+            p.kind(),
+            CssSyntaxKind::CSS_DECLARATION_OR_RULE_LIST
+                | CssSyntaxKind::CSS_DECLARATION_LIST
+                | CssSyntaxKind::CSS_DECLARATION_OR_AT_RULE_LIST
+        )
+    });
+    is_bogus(node.kind())
+        && in_block
+        && node
+            .descendants_tokens(Direction::Next)
+            .all(|t| t.kind() == CssSyntaxKind::SEMICOLON)
+}
+
+/// At-rules that are valid only at the top level of a stylesheet, written
+/// inside a block instead, as `(name, start, end)`.
+///
+/// Biome 0.5.8 parses `.a { @import "x.css"; }` without an error, though CSS
+/// Cascade and CSS Nesting make it invalid there, and Tailwind refuses to build
+/// a stylesheet that does it.
+pub fn misplaced_at_rules(ctx: &ParseCtx) -> Vec<(String, usize, usize)> {
+    ctx.syntax()
+        .descendants()
+        .filter_map(|n| {
+            let name = match n.kind() {
+                CssSyntaxKind::CSS_IMPORT_AT_RULE => "import",
+                CssSyntaxKind::CSS_CHARSET_AT_RULE => "charset",
+                CssSyntaxKind::CSS_NAMESPACE_AT_RULE => "namespace",
+                _ => return None,
+            };
+            let at_rule = n.parent()?;
+            let top_level = at_rule.parent().is_some_and(|list| {
+                list.parent()
+                    .is_some_and(|p| p.kind() == CssSyntaxKind::CSS_ROOT)
+            });
+            if top_level {
+                return None;
+            }
+            let (start, end) = trimmed(&at_rule);
+            Some((name.to_string(), start, end))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

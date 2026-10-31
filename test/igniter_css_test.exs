@@ -635,6 +635,58 @@ defmodule IgniterCssTest do
     end
   end
 
+  describe "validate/2 errors" do
+    test "each is placed by line and column" do
+      assert {:error, %{errors: [error]}} =
+               IgniterCss.validate(".a {\n  color: red\n  background: blue;\n}\n")
+
+      assert %IgniterCss.Diagnostic{line: 3, column: 13, text: ": blue"} = error
+    end
+
+    test "a colon in a custom property or a progid filter is not one" do
+      assert {:ok, %{errors: []}} = IgniterCss.validate(".a { --x: a:b; }")
+
+      assert {:ok, %{errors: []}} =
+               IgniterCss.validate(
+                 ".a { filter: progid:DXImageTransform.Microsoft.Alpha(Opacity=80); }"
+               )
+    end
+  end
+
+  describe "validate_block/2" do
+    test "takes declarations, nesting, at-rules and @apply" do
+      for body <- [
+            "padding: 20px;\n\n&:hover {\n  transform: translateY(-2px);\n}",
+            "@media (max-width: 900px) { padding: 12px; }",
+            "@apply hover:bg-red-500 md:p-4;",
+            ~s|content: "}"; color: red|,
+            "--x: a:b;",
+            ""
+          ] do
+        assert {:ok, %{valid: true, errors: []}} = IgniterCss.validate_block(body), body
+      end
+    end
+
+    test "places an error in the body, not in the rule it is read inside" do
+      assert {:error, %{errors: [error | _rest]}} =
+               IgniterCss.validate_block("gap: 1px;\ncolor crimson")
+
+      assert %IgniterCss.Diagnostic{line: 2, column: 14} = error
+    end
+
+    test "refuses a } that closes the block early, even when the rest parses" do
+      assert {:error, %{errors: [error]}} =
+               IgniterCss.validate_block("gap: 1px; } body { display: none; ")
+
+      assert %IgniterCss.Diagnostic{line: 1, column: 11, offset: 10, text: "}"} = error
+    end
+
+    test "refuses an @import, which is valid only at the top level" do
+      assert {:error, %{errors: [%{text: ~s|@import "x.css";|}]}} =
+               IgniterCss.validate_block(~s|@import "x.css";|)
+    end
+  end
+
   describe "extract_*" do
     test "extracts colours by selector" do
       assert {:ok, [{".a", ["color: #333"]}, {".b", ["background: rgba(0,0,0,.5)"]}]} =

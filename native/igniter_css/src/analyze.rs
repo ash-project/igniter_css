@@ -6,11 +6,12 @@
 //! can violate the diff-minimality constraint -- these are the queries the
 //! Elixir side uses to report on a stylesheet.
 
-use crate::ctx::{ParseCtx, ParseOptions};
+use crate::ctx::{ParseCtx, ParseError, ParseOptions};
 use crate::error::Result;
 use crate::locate::{
-    all_comments, at_rule_body, declaration_lists, declarations_in_block, find_all_at_rules,
-    find_all_rules, find_at_rules_named, find_top_level_rules, DeclRef,
+    all_comments, at_rule_body, closing_brace, declaration_lists, declarations_in_block,
+    find_all_at_rules, find_all_rules, find_at_rules_named, find_top_level_rules,
+    in_free_form_value, is_stray_semicolon, misplaced_at_rules, DeclRef,
 };
 use crate::ops::at_rule::normalize_target_needle;
 use crate::ops::query;
@@ -634,9 +635,118 @@ pub fn analyze(source: &str, options: ParseOptions) -> Result<Analysis> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Validation {
     pub valid: bool,
+    /// How many diagnostics the parser raised, before any of them is set aside
+    /// as an error it raises against valid CSS. `errors` is the verdict.
     pub diagnostics: usize,
     pub round_trips: bool,
     pub message: String,
+    pub errors: Vec<Diagnostic>,
+}
+
+/// One reason a stylesheet or a block is not valid, placed in the text the
+/// caller handed over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub message: String,
+    /// 1-based.
+    pub line: usize,
+    /// 1-based, counted in characters from the start of the line.
+    pub column: usize,
+    /// Byte offset of the start of `text`.
+    pub offset: usize,
+    /// The text the error is about; empty when it is about the end of the text.
+    pub text: String,
+}
+
+impl Validation {
+    fn refused(message: String) -> Self {
+        Validation {
+            valid: false,
+            diagnostics: 0,
+            round_trips: false,
+            errors: vec![Diagnostic {
+                message: message.clone(),
+                line: 1,
+                column: 1,
+                offset: 0,
+                text: String::new(),
+            }],
+            message,
+        }
+    }
+
+    fn of(ctx: &ParseCtx, errors: Vec<Diagnostic>) -> Self {
+        let round_trips = ctx.round_trips();
+        let message = if !round_trips {
+            "the parser did not reproduce the input byte for byte; refusing to patch this file"
+                .to_string()
+        } else {
+            match errors.as_slice() {
+                [] => "CSS is valid".to_string(),
+                [first, ..] => format!(
+                    "CSS parsed with {} diagnostic(s); the first is at line {}, column {}: {}",
+                    errors.len(),
+                    first.line,
+                    first.column,
+                    first.message
+                ),
+            }
+        };
+        Validation {
+            valid: round_trips && errors.is_empty(),
+            diagnostics: ctx.diagnostics_count(),
+            round_trips,
+            message,
+            errors,
+        }
+    }
+}
+
+/// What is wrong with a parse, in source order: the parser's own errors less
+/// the ones it raises against valid CSS, and the at-rules written inside a
+/// block that are valid only at the top level of a stylesheet.
+fn errors(ctx: &ParseCtx) -> Vec<ParseError> {
+    let mut errors: Vec<ParseError> = ctx
+        .errors()
+        .into_iter()
+        .filter(|e| {
+            !in_free_form_value(ctx, e.start, e.end) && !is_stray_semicolon(ctx, e.start, e.end)
+        })
+        .collect();
+    errors.extend(
+        misplaced_at_rules(ctx)
+            .into_iter()
+            .map(|(name, start, end)| ParseError {
+                message: format!("`@{name}` is valid only at the top level of a stylesheet"),
+                start,
+                end,
+            }),
+    );
+    errors.sort_by_key(|e| (e.start, e.end));
+    errors
+}
+
+/// `error` placed in `text`, whose first byte is at `shift` in the parsed
+/// source. A range that reaches past either end of `text` is clamped to it.
+fn placed(text: &str, shift: usize, error: &ParseError) -> Diagnostic {
+    let clamp = |at: usize| {
+        let mut at = at.saturating_sub(shift).min(text.len());
+        while !text.is_char_boundary(at) {
+            at -= 1;
+        }
+        at
+    };
+    let start = clamp(error.start);
+    let end = clamp(error.end).max(start);
+    let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
+
+    Diagnostic {
+        message: error.message.clone(),
+        line: text[..start].matches('\n').count() + 1,
+        column: text[line_start..start].chars().count() + 1,
+        offset: start,
+        text: text[start..end].to_string(),
+    }
 }
 
 /// Is this CSS understood well enough to patch?
@@ -644,44 +754,81 @@ pub struct Validation {
 /// "Valid" here means: the parser reproduced the input byte for byte **and**
 /// raised no errors. The round-trip half is the one that actually matters for
 /// safety -- it is what every codemod checks before touching a file.
+///
+/// The errors are the parser's, less the ones Biome 0.5.8 raises against valid
+/// CSS (see `in_free_form_value` and `is_stray_semicolon`), plus an `@import`,
+/// `@charset` or `@namespace` written inside a block, which it does not raise.
 pub fn validate(source: &str, options: ParseOptions) -> Validation {
     if let Err(e) = crate::ctx::check_nesting(source) {
-        return Validation {
-            valid: false,
-            diagnostics: 0,
-            round_trips: false,
-            message: e.to_string(),
-        };
+        return Validation::refused(e.to_string());
     }
     let ctx = match ParseCtx::try_new(source, options) {
         Ok(c) => c,
-        Err(e) => {
-            return Validation {
-                valid: false,
-                diagnostics: 0,
-                round_trips: false,
-                message: e.to_string(),
-            }
-        }
+        Err(e) => return Validation::refused(e.to_string()),
     };
-    let round_trips = ctx.round_trips();
-    let diagnostics = ctx.diagnostics_count();
-    let has_errors = ctx.has_errors();
-    let valid = round_trips && !has_errors;
-    let message = if !round_trips {
-        "the parser did not reproduce the input byte for byte; refusing to patch this file"
-            .to_string()
-    } else if has_errors {
-        format!("CSS parsed with {diagnostics} diagnostic(s)")
+    // Offsets are into the source without its byte-order mark, which no editor
+    // shows as a column.
+    let bom = if ctx.has_bom() {
+        crate::ctx::BOM.len()
     } else {
-        "CSS is valid".to_string()
+        0
     };
-    Validation {
-        valid,
-        diagnostics,
-        round_trips,
-        message,
+    let errors = errors(&ctx)
+        .iter()
+        .map(|e| {
+            let mut d = placed(ctx.source(), 0, e);
+            d.offset += bom;
+            d
+        })
+        .collect();
+    Validation::of(&ctx, errors)
+}
+
+/// The rule a block is read inside, its body on lines of its own: a body that
+/// ends in a `//` comment, where those are read as comments, cannot then
+/// comment out the closing brace.
+const BLOCK_OPEN: &str = ".block {\n";
+const BLOCK_CLOSE: &str = "\n}\n";
+
+/// Is `body` valid as the contents of one rule's block: declarations, nested
+/// rules and at-rules, what an editor gives a single element?
+///
+/// Read as the parser reads a block, by putting it inside one, with every
+/// error placed in `body` itself. On top of `validate/2`'s checks, a `}` in
+/// `body` that closes the block it was put in is an error: everything after it
+/// would be outside that block, at the top level of whatever stylesheet the
+/// body is written into, and still parse.
+pub fn validate_block(body: &str, options: ParseOptions) -> Validation {
+    if let Err(e) = crate::ctx::check_nesting(body) {
+        return Validation::refused(e.to_string());
     }
+    let source = format!("{BLOCK_OPEN}{body}{BLOCK_CLOSE}");
+    let ctx = match ParseCtx::try_new(&source, options) {
+        Ok(c) => c,
+        Err(e) => return Validation::refused(e.to_string()),
+    };
+
+    let mut found = errors(&ctx);
+    let body_end = BLOCK_OPEN.len() + body.len();
+    let closed_early = find_top_level_rules(&ctx)
+        .first()
+        .and_then(closing_brace)
+        .filter(|&at| at < body_end);
+    if let Some(at) = closed_early {
+        found.push(ParseError {
+            message: "this `}` closes the block it is written in; everything after it is outside"
+                .to_string(),
+            start: at,
+            end: at + 1,
+        });
+        found.sort_by_key(|e| (e.start, e.end));
+    }
+
+    let errors = found
+        .iter()
+        .map(|e| placed(body, BLOCK_OPEN.len(), e))
+        .collect();
+    Validation::of(&ctx, errors)
 }
 
 #[cfg(test)]
@@ -1000,6 +1147,131 @@ mod tests {
     #[test]
     fn an_empty_sheet_is_valid() {
         assert!(validate("", opts()).valid);
+    }
+
+    #[test]
+    fn an_error_is_placed_by_line_and_column() {
+        let v = validate(".a {\n  color: red\n  background: blue;\n}\n", opts());
+        assert!(!v.valid);
+        let first = &v.errors[0];
+        assert_eq!((first.line, first.column), (3, 13));
+        assert_eq!(first.text, ": blue");
+        assert!(v.message.contains("line 3, column 13"), "{}", v.message);
+    }
+
+    #[test]
+    fn a_column_counts_characters_not_bytes() {
+        let v = validate(".é { content: \"ü\" color: red; }", opts());
+        // `: red` is the 24th character and the 26th byte.
+        assert_eq!((v.errors[0].column, v.errors[0].offset), (24, 25));
+    }
+
+    // Biome 0.5.8 refuses a `:` in a value; a custom property's value may hold
+    // one, and Bootstrap 3 ships `progid:` filters.
+    #[test]
+    fn a_colon_in_a_free_form_value_is_valid() {
+        for src in [
+            ".a { --x: a:b; }",
+            ".a { --x: [a:b]; }",
+            ".a { --x: a:b !important; }",
+            ".a { filter: progid:DXImageTransform.Microsoft.gradient(startColorstr='#80000000'); }",
+            ".a { -ms-filter: PROGID:DXImageTransform.Microsoft.Alpha(Opacity=80); }",
+        ] {
+            let v = validate(src, opts());
+            assert!(v.valid, "{src}: {:?}", v.errors);
+            assert!(
+                v.diagnostics > 0,
+                "{src} no longer trips the parser; drop the exemption"
+            );
+        }
+    }
+
+    #[test]
+    fn a_colon_in_an_ordinary_value_is_not() {
+        assert!(!validate(".a { color: red color: blue; }", opts()).valid);
+        assert!(!validate(".a { --x: a:(b; }", opts()).valid);
+    }
+
+    #[test]
+    fn stray_semicolons_are_nothing() {
+        assert!(validate(".a { color: red;;; gap: 1px }", opts()).valid);
+    }
+
+    #[test]
+    fn an_import_inside_a_block_is_invalid() {
+        let v = validate(".a { @import \"x.css\"; }", opts());
+        assert!(!v.valid);
+        assert_eq!(v.errors[0].text, "@import \"x.css\";");
+        assert!(validate("@import \"x.css\";\n.a {}\n", opts()).valid);
+    }
+
+    // -- blocks -------------------------------------------------------------
+
+    #[test]
+    fn a_block_takes_declarations_nesting_and_tailwind() {
+        for body in [
+            "padding: 20px;\n\n&:hover {\n  transform: translateY(-2px);\n}",
+            "@media (max-width: 900px) { padding: 12px; }",
+            "@supports (display: grid) { display: grid }",
+            "@container card (min-width: 400px) { color: red }",
+            "@layer base { color: red }",
+            "@apply hover:bg-red-500 md:p-4;",
+            "&:hover { @apply hover:underline md:p-2; }",
+            "content: \"}\"; color: red",
+            "/* } */\ngap: 1px;",
+            "& .w-\\[10px\\] { gap: 1px; }",
+            "body { display: none; }",
+            "",
+        ] {
+            let v = validate_block(body, opts());
+            assert!(v.valid, "{body:?}: {:?}", v.errors);
+        }
+    }
+
+    #[test]
+    fn a_block_error_is_placed_in_the_body() {
+        let v = validate_block("gap: 1px;\ncolor: red background: blue;", opts());
+        assert_eq!(v.errors.len(), 1);
+        assert_eq!((v.errors[0].line, v.errors[0].column), (2, 22));
+        assert_eq!(v.errors[0].offset, 31);
+        assert_eq!(v.errors[0].text, ": blue");
+    }
+
+    #[test]
+    fn a_block_closed_by_its_own_body_is_invalid() {
+        for (body, column) in [
+            ("gap: 1px; } body { display: none; ", 11),
+            ("} &:hover { gap: 1px; }", 1),
+            ("--x: a:b }", 10),
+        ] {
+            let v = validate_block(body, opts());
+            assert!(!v.valid, "{body:?}");
+            let early = v
+                .errors
+                .iter()
+                .find(|e| e.message.contains("closes the block"))
+                .unwrap_or_else(|| panic!("{body:?}: {:?}", v.errors));
+            assert_eq!(
+                (early.line, early.column, early.text.as_str()),
+                (1, column, "}")
+            );
+        }
+    }
+
+    #[test]
+    fn a_block_left_open_is_invalid_at_its_end() {
+        let v = validate_block("&:hover { gap: 1px;", opts());
+        assert!(!v.valid);
+        let last = v.errors.last().unwrap();
+        assert_eq!((last.line, last.column, last.text.as_str()), (1, 20, ""));
+    }
+
+    #[test]
+    fn a_comment_or_string_left_open_is_invalid() {
+        assert!(!validate_block("/* never closed\ngap: 1px;", opts()).valid);
+        assert!(!validate_block("content: \"abc\ncolor: red;", opts()).valid);
+        assert!(!validate_block("width: calc(1px + 2px;", opts()).valid);
+        assert!(!validate_block("&[data-open { gap: 1px; }", opts()).valid);
     }
 
     #[test]

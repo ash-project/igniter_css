@@ -120,6 +120,41 @@ pub struct ExValidation {
     pub diagnostics: usize,
     pub round_trips: bool,
     pub message: String,
+    pub errors: Vec<ExDiagnostic>,
+}
+
+impl From<analyze::Validation> for ExValidation {
+    fn from(v: analyze::Validation) -> Self {
+        ExValidation {
+            valid: v.valid,
+            diagnostics: v.diagnostics,
+            round_trips: v.round_trips,
+            message: v.message,
+            errors: v.errors.into_iter().map(ExDiagnostic::from).collect(),
+        }
+    }
+}
+
+#[derive(NifStruct, Debug, Clone)]
+#[module = "IgniterCss.Diagnostic"]
+pub struct ExDiagnostic {
+    pub message: String,
+    pub line: usize,
+    pub column: usize,
+    pub offset: usize,
+    pub text: String,
+}
+
+impl From<analyze::Diagnostic> for ExDiagnostic {
+    fn from(d: analyze::Diagnostic) -> Self {
+        ExDiagnostic {
+            message: d.message,
+            line: d.line,
+            column: d.column,
+            offset: d.offset,
+            text: d.text,
+        }
+    }
 }
 
 #[derive(NifStruct, Debug, Clone)]
@@ -533,15 +568,34 @@ fn analyze_nif(env: Env, source: String, opts: ExParseOpts) -> NifResult<Term> {
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn validate_nif(env: Env, source: String, opts: ExParseOpts) -> NifResult<Term> {
-    let v = analyze::validate(&source, opts.into());
-    let status = if v.valid { atoms::ok() } else { atoms::error() };
-    let payload = ExValidation {
-        valid: v.valid,
-        diagnostics: v.diagnostics,
-        round_trips: v.round_trips,
-        message: v.message,
+    respond_validation(
+        env,
+        atoms::validate_nif(),
+        analyze::validate(&source, opts.into()),
+    )
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn validate_block_nif(env: Env, body: String, opts: ExParseOpts) -> NifResult<Term> {
+    respond_validation(
+        env,
+        atoms::validate_block_nif(),
+        analyze::validate_block(&body, opts.into()),
+    )
+}
+
+/// `{:ok | :error, fun, %IgniterCss.Validation{}}`: the details either way.
+fn respond_validation(
+    env: Env,
+    fun: rustler::types::atom::Atom,
+    validation: analyze::Validation,
+) -> NifResult<Term> {
+    let status = if validation.valid {
+        atoms::ok()
+    } else {
+        atoms::error()
     };
-    encode_response(env, status, atoms::validate_nif(), payload)
+    encode_response(env, status, fun, ExValidation::from(validation))
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]

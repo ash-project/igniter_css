@@ -36,6 +36,9 @@ crate-type = ["cdylib", "rlib"]
 biome_css_parser = "=0.5.8"
 biome_css_syntax = "=0.5.8"
 biome_rowan = "=0.5.8"
+# Already in the graph through biome_css_parser; named here only for the
+# `Diagnostic` trait, which is how a parse error gives up its span.
+biome_diagnostics = "=0.5.8"
 rustler = "=0.38.0"
 
 [dev-dependencies]

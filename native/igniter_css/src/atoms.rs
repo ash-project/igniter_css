@@ -38,6 +38,7 @@ rustler::atoms! {
     analyze_nif,
     get_at_rules_nif,
     validate_nif,
+    validate_block_nif,
     extract_colors_nif,
     extract_media_queries_nif,
     extract_animations_nif,

@@ -502,10 +502,40 @@ defmodule IgniterCss do
   """
   @spec validate(String.t(), opts()) :: {:ok, Validation.t()} | {:error, Validation.t()}
   def validate(source, opts \\ []) do
-    case Native.validate_nif(source, ParseOpts.new(opts)) do
-      {:ok, _fun, validation} -> {:ok, validation}
-      {:error, _fun, validation} -> {:error, validation}
-    end
+    Native.validate_nif(source, ParseOpts.new(opts)) |> validation()
+  end
+
+  @doc """
+  Is `body` valid as the contents of one rule's block?
+
+  What an editor that styles one element takes: declarations, nested rules
+  such as `&:hover { … }`, and at-rules such as `@media (…) { … }` or Tailwind's
+  `@apply`. It is read as the parser reads a block, by putting it inside one,
+  and every error is placed by line and column in `body` itself.
+
+  On top of what `validate/2` checks, a `}` that closes the block the body is
+  written in is an error, though what follows it may parse: in a stylesheet,
+  everything after it would be outside the block.
+
+  Returns `{:ok, %IgniterCss.Validation{}}` or `{:error, %IgniterCss.Validation{}}`.
+
+      iex> {:ok, v} = IgniterCss.validate_block("padding: 4px;\\n&:hover { color: red; }")
+      iex> v.errors
+      []
+
+      iex> {:error, v} = IgniterCss.validate_block("gap: 1px;\\ncolor: red background: blue;")
+      iex> [%IgniterCss.Diagnostic{line: 2, column: 22, text: ": blue"}] = v.errors
+      iex> v.valid
+      false
+
+      iex> {:error, v} = IgniterCss.validate_block("gap: 1px; } body { display: none; ")
+      iex> [%IgniterCss.Diagnostic{line: 1, column: 11, text: "}"}] = v.errors
+      iex> v.valid
+      false
+  """
+  @spec validate_block(String.t(), opts()) :: {:ok, Validation.t()} | {:error, Validation.t()}
+  def validate_block(body, opts \\ []) do
+    Native.validate_block_nif(body, ParseOpts.new(opts)) |> validation()
   end
 
   @doc """
@@ -542,4 +572,7 @@ defmodule IgniterCss do
 
   defp unwrap({:ok, _fun, value}), do: {:ok, value}
   defp unwrap({:error, _fun, reason}), do: {:error, reason}
+
+  defp validation({:ok, _fun, validation}), do: {:ok, validation}
+  defp validation({:error, _fun, validation}), do: {:error, validation}
 end

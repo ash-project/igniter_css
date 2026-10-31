@@ -91,6 +91,7 @@ defmodule IgniterCss.Native do
   def analyze_nif(_source, _opts), do: error()
   def get_at_rules_nif(_source, _name, _matching, _opts), do: error()
   def validate_nif(_source, _opts), do: error()
+  def validate_block_nif(_body, _opts), do: error()
   def extract_colors_nif(_source, _opts), do: error()
   def extract_media_queries_nif(_source, _opts), do: error()
   def extract_animations_nif(_source, _opts), do: error()
