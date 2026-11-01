@@ -11,6 +11,7 @@
 
 use biome_css_parser::{parse_css, CssParse, CssParserOptions};
 use biome_css_syntax::{CssSyntaxKind, CssSyntaxNode};
+use biome_diagnostics::Diagnostic;
 use biome_rowan::TextRange;
 use std::collections::BTreeMap;
 
@@ -75,6 +76,14 @@ pub fn check_nesting(source: &str) -> crate::error::Result<()> {
         )));
     }
     Ok(())
+}
+
+/// One error the parser raised: what it said, and the byte range it is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseError {
+    pub message: String,
+    pub start: usize,
+    pub end: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,6 +216,35 @@ impl ParseCtx {
 
     pub fn has_errors(&self) -> bool {
         self.parse.has_errors()
+    }
+
+    /// Every error the parser raised, with the bytes it points at, in source
+    /// order.
+    ///
+    /// Biome reports an error without a span only for a whole-file problem;
+    /// that one is pinned to the end of the file, where the reader ran out.
+    pub fn errors(&self) -> Vec<ParseError> {
+        let end = self.source.len();
+        let mut errors: Vec<ParseError> = self
+            .parse
+            .diagnostics()
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| {
+                let (start, stop) = d
+                    .location()
+                    .span
+                    .map(|r| (usize::from(r.start()), usize::from(r.end())))
+                    .unwrap_or((end, end));
+                ParseError {
+                    message: d.message.to_string(),
+                    start: start.min(end),
+                    end: stop.clamp(start.min(end), end),
+                }
+            })
+            .collect();
+        errors.sort_by_key(|e| (e.start, e.end));
+        errors
     }
 
     /// The parse is lossless by construction, but assert it before we let any
@@ -384,22 +422,6 @@ pub fn is_comment_kind(kind: biome_rowan::TriviaPieceKind) -> bool {
         kind,
         biome_rowan::TriviaPieceKind::SingleLineComment
             | biome_rowan::TriviaPieceKind::MultiLineComment
-    )
-}
-
-/// Kinds that represent a rule Biome could not understand. They still carry
-/// their original source text, which is exactly why we can patch around them.
-pub fn is_bogus(kind: CssSyntaxKind) -> bool {
-    matches!(
-        kind,
-        CssSyntaxKind::CSS_BOGUS
-            | CssSyntaxKind::CSS_BOGUS_RULE
-            | CssSyntaxKind::CSS_BOGUS_AT_RULE
-            | CssSyntaxKind::CSS_BOGUS_BLOCK
-            | CssSyntaxKind::CSS_BOGUS_DECLARATION_ITEM
-            | CssSyntaxKind::CSS_BOGUS_PROPERTY
-            | CssSyntaxKind::CSS_BOGUS_PROPERTY_VALUE
-            | CssSyntaxKind::CSS_BOGUS_SELECTOR
     )
 }
 

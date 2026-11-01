@@ -111,16 +111,42 @@ defmodule IgniterCss.Validation do
   checks before touching a file. A stylesheet that round-trips but has
   diagnostics is still patchable; one that does not round-trip is not, and
   `IgniterCss` will refuse rather than risk a wrong edit.
+
+  `errors` is the verdict, each placed by line and column: the parser's errors
+  less the ones it raises against valid CSS, such as a `:` in a custom
+  property's value or an `@apply` with no `;` written last in a block.
+  `diagnostics` counts what the parser raised before that.
   """
 
   @type t :: %__MODULE__{
           valid: boolean(),
           diagnostics: non_neg_integer(),
           round_trips: boolean(),
-          message: String.t()
+          message: String.t(),
+          errors: [IgniterCss.Diagnostic.t()]
         }
 
-  defstruct valid: false, diagnostics: 0, round_trips: false, message: ""
+  defstruct valid: false, diagnostics: 0, round_trips: false, message: "", errors: []
+end
+
+defmodule IgniterCss.Diagnostic do
+  @moduledoc """
+  One reason CSS is not valid, placed in the text that was checked.
+
+  `line` and `column` are 1-based, the column counted in characters. `offset` is
+  the byte offset of `text`, the part of the source the error is about; `text`
+  is empty when the error is about the end of the source.
+  """
+
+  @type t :: %__MODULE__{
+          message: String.t(),
+          line: pos_integer(),
+          column: pos_integer(),
+          offset: non_neg_integer(),
+          text: String.t()
+        }
+
+  defstruct message: "", line: 1, column: 1, offset: 0, text: ""
 end
 
 defmodule IgniterCss.AtRule do

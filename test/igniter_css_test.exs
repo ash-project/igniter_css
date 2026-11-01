@@ -635,6 +635,155 @@ defmodule IgniterCssTest do
     end
   end
 
+  describe "validate/2 errors" do
+    test "each is placed by line and column" do
+      assert {:error, %{errors: [error]}} =
+               IgniterCss.validate(".a {\n  color: red\n  background: blue;\n}\n")
+
+      assert %IgniterCss.Diagnostic{line: 3, column: 13, text: ": blue"} = error
+    end
+
+    test "a colon in a custom property or a progid filter is not one" do
+      assert {:ok, %{errors: []}} = IgniterCss.validate(".a { --x: a:b; }")
+
+      assert {:ok, %{errors: []}} =
+               IgniterCss.validate(
+                 ".a { filter: progid:DXImageTransform.Microsoft.Alpha(Opacity=80); }"
+               )
+    end
+  end
+
+  describe "validate_block/2" do
+    test "takes declarations, nesting, at-rules and @apply" do
+      for body <- [
+            "padding: 20px;\n\n&:hover {\n  transform: translateY(-2px);\n}",
+            "@media (max-width: 900px) { padding: 12px; }",
+            "@apply hover:bg-red-500 md:p-4;",
+            ~s|content: "}"; color: red|,
+            "--x: a:b;",
+            ""
+          ] do
+        assert {:ok, %{valid: true, errors: []}} = IgniterCss.validate_block(body), body
+      end
+    end
+
+    test "places an error in the body, not in the rule it is read inside" do
+      assert {:error, %{errors: [error]}} =
+               IgniterCss.validate_block("gap: 1px;\ncolor crimson")
+
+      assert %IgniterCss.Diagnostic{line: 2, column: 1, offset: 10, text: "color crimson"} =
+               error
+    end
+
+    test "names a declaration with no `:`, however it ends" do
+      for {body, line} <- [
+            {"color crimson", 1},
+            {"color crimson;", 1},
+            {"gap: 1px;\ncolor crimson", 2},
+            {"gap: 1px;\ncolor crimson;\nmargin: 0;", 2}
+          ] do
+        assert {:error, %{errors: [error]}} = IgniterCss.validate_block(body), body
+
+        assert %IgniterCss.Diagnostic{
+                 line: ^line,
+                 column: 1,
+                 text: "color crimson",
+                 message: "Expected a `:` after the property name `color`"
+               } = error
+      end
+
+      assert {:error, %{errors: [%{line: 1, column: 11, text: "color crimson"}]}} =
+               IgniterCss.validate_block("&:hover { color crimson }")
+    end
+
+    test "refuses a string left open in a custom property, which takes a `:`" do
+      assert {:error, %{errors: [error]}} = IgniterCss.validate_block(~s|--x: "abc|)
+
+      assert %IgniterCss.Diagnostic{
+               line: 1,
+               column: 6,
+               text: ~s|"abc|,
+               message: "Missing closing quote"
+             } = error
+
+      assert {:error, %{errors: [%{column: 11, message: "Missing closing quote"}]}} =
+               IgniterCss.validate(~s|.a { --x: "abc\n}|)
+
+      assert {:ok, _} = IgniterCss.validate_block("--x: a:b;")
+    end
+
+    test "accepts an at-rule with no `;` written last in a block" do
+      for body <- ["@apply p-4", "padding: 4px;\n@apply p-4", "&:hover { @apply p-4 }"] do
+        assert {:ok, %{valid: true, errors: []}} = IgniterCss.validate_block(body), body
+      end
+
+      assert {:ok, %{valid: true}} = IgniterCss.validate(".a { @apply p-4 }\n.b { color: red; }")
+    end
+
+    test "reads an at-rule's prelude up to the } of its block, as CSS Syntax does" do
+      for body <- ["@apply p-4\ncolor: red", "@apply p-4 gap: 1px"] do
+        assert {:ok, %{valid: true}} = IgniterCss.validate_block(body), body
+      end
+
+      assert {:ok, %{valid: true}} = IgniterCss.validate(".a { @foo (min-width: 1px) }")
+
+      assert {:error, %{errors: [%{line: 1, column: 1, text: "@apply foo(a"}]}} =
+               IgniterCss.validate_block("@apply foo(a")
+    end
+
+    test "counts a line ended by \\r alone" do
+      assert {:error, %{errors: [%{line: 2, column: 1, text: "color crimson"}]}} =
+               IgniterCss.validate_block("gap: 1px;\rcolor crimson")
+    end
+
+    test "keeps a string's missing closing quote over what the parser misreads after it" do
+      assert {:error, %{errors: [error | _]}} =
+               IgniterCss.validate_block(~s|&[data-x="a\nb"] { gap: 1px; }|)
+
+      assert %IgniterCss.Diagnostic{
+               line: 1,
+               column: 10,
+               text: ~s|"a|,
+               message: "Missing closing quote"
+             } = error
+    end
+
+    test "quotes the author's text in its own messages on one line" do
+      assert {:error, %{errors: [error], message: message}} =
+               IgniterCss.validate_block("&:hover\n.b")
+
+      assert %IgniterCss.Diagnostic{
+               text: "&:hover\n.b",
+               message: "Expected a `{` after the selector `&:hover\\n.b`"
+             } = error
+
+      refute message =~ "\n"
+    end
+
+    test "places a block left open where its } is missing" do
+      assert {:error, %{errors: [error]}} = IgniterCss.validate_block("&:hover { gap: 1px;")
+
+      assert %IgniterCss.Diagnostic{
+               line: 1,
+               column: 20,
+               text: "",
+               message: "Expected a `}` to close the `{` on line 1, column 9"
+             } = error
+    end
+
+    test "refuses a } that closes the block early, even when the rest parses" do
+      assert {:error, %{errors: [error]}} =
+               IgniterCss.validate_block("gap: 1px; } body { display: none; ")
+
+      assert %IgniterCss.Diagnostic{line: 1, column: 11, offset: 10, text: "}"} = error
+    end
+
+    test "refuses an @import, which is valid only at the top level" do
+      assert {:error, %{errors: [%{text: ~s|@import "x.css";|}]}} =
+               IgniterCss.validate_block(~s|@import "x.css";|)
+    end
+  end
+
   describe "extract_*" do
     test "extracts colours by selector" do
       assert {:ok, [{".a", ["color: #333"]}, {".b", ["background: rgba(0,0,0,.5)"]}]} =

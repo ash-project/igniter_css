@@ -554,4 +554,83 @@ defmodule IgniterCss.AtRulesTest do
       assert prefix == "d-"
     end
   end
+
+  describe "list_at_rules/2 and remove_at_rules/3" do
+    # A build tool that reads files is told what to read by at-rules anywhere in
+    # the sheet, and a looser grammar than Biome's still acts on one the parser
+    # could not place: Tailwind imports the file named inside `@font-face`.
+    @nested """
+    @import "https://fonts.example.test/a.css";
+    @media print {
+      @import "../private.css";
+      .a { color: red; }
+    }
+    .b { &:hover { @source "../notes"; } }
+    @font-face { src: x; @import "../font.css"; font-family: a; }
+    /* @import "../comment.css"; */
+    .c { content: "@import 'string.css'"; background: url(@import.png); }
+    """
+
+    defp local?(%IgniterCss.AtRule{name: "import", target: "https://" <> _}), do: false
+    defp local?(%IgniterCss.AtRule{name: name}), do: name in ~w(import source)
+
+    test "lists every at-rule, nested or unplaced, and none in a comment, a string or a url()" do
+      assert {:ok, rules} = IgniterCss.list_at_rules(@nested, allow_wrong_line_comments: false)
+
+      assert Enum.map(rules, &{&1.name, &1.target}) == [
+               {"import", "https://fonts.example.test/a.css"},
+               {"media", nil},
+               {"import", "../private.css"},
+               {"source", "../notes"},
+               {"font-face", nil},
+               {"import", "../font.css"}
+             ]
+    end
+
+    test "removes the ones a caller picked, wherever they are, and only those" do
+      opts = [allow_wrong_line_comments: false]
+      {:ok, rules} = IgniterCss.list_at_rules(@nested, opts)
+
+      assert {:ok, out} = IgniterCss.remove_at_rules(@nested, Enum.filter(rules, &local?/1), opts)
+      assert out.changed
+      refute out.source =~ "private.css"
+      refute out.source =~ "../notes"
+      refute out.source =~ "font.css"
+      assert out.source =~ ~s|@import "https://fonts.example.test/a.css";|
+      assert out.source =~ "font-family: a;"
+      assert out.source =~ ~s|/* @import "../comment.css"; */|
+      assert out.source =~ "url(@import.png)"
+
+      # Matched on the text, so the same list removes nothing the second time.
+      assert {:ok, %{changed: false}} =
+               IgniterCss.remove_at_rules(out.source, Enum.filter(rules, &local?/1), opts)
+    end
+
+    test "names an escaped at-rule as written, and folds its case" do
+      assert {:ok, [escaped, upper]} =
+               IgniterCss.list_at_rules(~s|@\\69mport "a.css";\n@IMPORT "b.css";|)
+
+      assert escaped.name == "\\69mport"
+      assert upper.name == "import"
+    end
+
+    # Before, `@;` was listed as an at-rule named `;` that ran on to `color: red;`.
+    test "an @ with no name against it starts no at-rule, so nothing goes with it" do
+      for {css, text} <- [
+            {".a { @; color: red; }", "@; color: red;"},
+            {".a { @(x); color: red; }", "@(x);"}
+          ] do
+        assert {:ok, []} = IgniterCss.list_at_rules(css)
+
+        assert {:ok, %{changed: false, source: ^css}} =
+                 IgniterCss.remove_at_rules(css, [%IgniterCss.AtRule{text: text}])
+      end
+    end
+
+    test "refuses to remove from braces that do not balance" do
+      css = ~s|.a { @import "x.css";|
+      {:ok, rules} = IgniterCss.list_at_rules(css)
+      assert {:error, _reason} = IgniterCss.remove_at_rules(css, rules)
+    end
+  end
 end

@@ -14,6 +14,7 @@ rustler::atoms! {
     ensure_at_rule_declarations_nif,
     remove_at_rule_declarations_nif,
     remove_at_rule_nif,
+    remove_at_rules_nif,
     has_at_rule_nif,
     add_import_nif,
     remove_import_nif,
@@ -37,7 +38,9 @@ rustler::atoms! {
 
     analyze_nif,
     get_at_rules_nif,
+    list_at_rules_nif,
     validate_nif,
+    validate_block_nif,
     extract_colors_nif,
     extract_media_queries_nif,
     extract_animations_nif,

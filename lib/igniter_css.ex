@@ -246,6 +246,53 @@ defmodule IgniterCss do
   end
 
   @doc """
+  Every at-rule in the file, as `IgniterCss.AtRule` structs in source order,
+  wherever it is: nested in `@media`, `@layer`, a rule or another at-rule's
+  block, and where the parser could not place one, such as an `@import` inside
+  `@font-face` or a keyframe. Biome keeps that one as bogus tokens, but a reader
+  with a looser grammar, Tailwind for one, still acts on it, so it is here too,
+  running from its `@` to the `;` or the block that ends it.
+
+  An `@` inside a string, a comment or a `url()` starts nothing. The name keeps
+  any escape as written (`@\\69mport` is named `\\69mport`).
+
+  For a caller that must know everything a stylesheet asks for, such as one
+  that keeps a build tool from reading files; the codemods stay top-level.
+
+      iex> css = ~s|@media print {\\n  @import "a.css";\\n}\\n@font-face { @plugin "p"; }\\n|
+      iex> {:ok, rules} = IgniterCss.list_at_rules(css)
+      iex> Enum.map(rules, &{&1.name, &1.target})
+      [{"media", nil}, {"import", "a.css"}, {"font-face", nil}, {"plugin", "p"}]
+  """
+  @spec list_at_rules(String.t(), opts()) ::
+          {:ok, [IgniterCss.AtRule.t()]} | {:error, String.t()}
+  def list_at_rules(source, opts \\ []) do
+    Native.list_at_rules_nif(source, ParseOpts.new(opts)) |> unwrap()
+  end
+
+  @doc """
+  Remove, wherever it is, every at-rule written exactly as one of `at_rules`:
+  at-rules `list_at_rules/2` returned for this `source`, read with the same
+  `opts`. One inside another being removed goes with it, and the comments a
+  removed at-rule owns go too, as with `remove_at_rule/4`.
+
+  Matched on the at-rule's text, so a second run on the output finds nothing
+  and reports `changed: false`.
+
+      iex> css = ~s|@media print {\\n  @import "a.css";\\n  .a { color: red; }\\n}\\n|
+      iex> {:ok, rules} = IgniterCss.list_at_rules(css)
+      iex> {:ok, out} = IgniterCss.remove_at_rules(css, Enum.filter(rules, &(&1.name == "import")))
+      iex> out.source
+      ~s|@media print {\\n  .a { color: red; }\\n}\\n|
+  """
+  @spec remove_at_rules(String.t(), [IgniterCss.AtRule.t()], opts()) :: result()
+  def remove_at_rules(source, at_rules, opts \\ []) when is_list(at_rules) do
+    source
+    |> Native.remove_at_rules_nif(Enum.map(at_rules, & &1.text), ParseOpts.new(opts))
+    |> unwrap()
+  end
+
+  @doc """
   Add an `@import`, building the line for you.
 
   Absolute URLs are wrapped in `url(...)`; relative paths are quoted.
@@ -502,10 +549,53 @@ defmodule IgniterCss do
   """
   @spec validate(String.t(), opts()) :: {:ok, Validation.t()} | {:error, Validation.t()}
   def validate(source, opts \\ []) do
-    case Native.validate_nif(source, ParseOpts.new(opts)) do
-      {:ok, _fun, validation} -> {:ok, validation}
-      {:error, _fun, validation} -> {:error, validation}
-    end
+    Native.validate_nif(source, ParseOpts.new(opts)) |> validation()
+  end
+
+  @doc """
+  Is `body` valid as the contents of one rule's block?
+
+  What an editor that styles one element takes: declarations, nested rules
+  such as `&:hover { … }`, and at-rules such as `@media (…) { … }` or Tailwind's
+  `@apply`. It is read as the parser reads a block, by putting it inside one,
+  and every error is placed by line and column in `body` itself.
+
+  On top of what `validate/2` checks, a `}` that closes the block the body is
+  written in is an error, though what follows it may parse: in a stylesheet,
+  everything after it would be outside the block.
+
+  No error points past the body or names the block it is put in. A body that
+  ends in the middle of a statement has one error on that statement, and one
+  that leaves a block open has one where its `}` is missing. A declaration
+  with no `:`, which the parser reads as a nested rule, is named as one. A
+  string with no closing quote keeps the parser's own error, whatever it
+  misreads after it. A message quotes the author's text on one line, a line
+  break in it written `\\n`.
+
+  Returns `{:ok, %IgniterCss.Validation{}}` or `{:error, %IgniterCss.Validation{}}`.
+
+      iex> {:ok, v} = IgniterCss.validate_block("padding: 4px;\\n&:hover { color: red; }")
+      iex> v.errors
+      []
+
+      iex> {:error, v} = IgniterCss.validate_block("gap: 1px;\\ncolor: red background: blue;")
+      iex> [%IgniterCss.Diagnostic{line: 2, column: 22, text: ": blue"}] = v.errors
+      iex> v.valid
+      false
+
+      iex> {:error, v} = IgniterCss.validate_block("gap: 1px;\\ncolor crimson")
+      iex> [%IgniterCss.Diagnostic{line: 2, column: 1, text: "color crimson", message: message}] = v.errors
+      iex> message
+      "Expected a `:` after the property name `color`"
+
+      iex> {:error, v} = IgniterCss.validate_block("gap: 1px; } body { display: none; ")
+      iex> [%IgniterCss.Diagnostic{line: 1, column: 11, text: "}"}] = v.errors
+      iex> v.valid
+      false
+  """
+  @spec validate_block(String.t(), opts()) :: {:ok, Validation.t()} | {:error, Validation.t()}
+  def validate_block(body, opts \\ []) do
+    Native.validate_block_nif(body, ParseOpts.new(opts)) |> validation()
   end
 
   @doc """
@@ -542,4 +632,7 @@ defmodule IgniterCss do
 
   defp unwrap({:ok, _fun, value}), do: {:ok, value}
   defp unwrap({:error, _fun, reason}), do: {:error, reason}
+
+  defp validation({:ok, _fun, validation}), do: {:ok, validation}
+  defp validation({:error, _fun, validation}), do: {:error, validation}
 end

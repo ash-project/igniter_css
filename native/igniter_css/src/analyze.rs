@@ -6,16 +6,20 @@
 //! can violate the diff-minimality constraint -- these are the queries the
 //! Elixir side uses to report on a stylesheet.
 
-use crate::ctx::{ParseCtx, ParseOptions};
+use crate::ctx::{ParseCtx, ParseError, ParseOptions};
 use crate::error::Result;
 use crate::locate::{
-    all_comments, at_rule_body, declaration_lists, declarations_in_block, find_all_at_rules,
-    find_all_rules, find_at_rules_named, find_top_level_rules, DeclRef,
+    all_comments, at_rule_body, at_rule_ended_by_its_block, closing_brace, declaration_lists,
+    declarations_in_block, find_all_at_rules, find_all_rules, find_at_rules_named,
+    find_every_at_rule, find_top_level_rules, in_free_form_value, is_stray_semicolon,
+    misplaced_at_rules, misread_rules, opening_brace, statement_before, AtRuleRef, DeclRef,
+    Statement, StatementKind,
 };
 use crate::ops::at_rule::normalize_target_needle;
 use crate::ops::query;
 use biome_css_syntax::{CssSyntaxKind, CssSyntaxNode};
-use biome_rowan::Direction;
+use biome_diagnostics::{display::SourceFile, SourceCode};
+use biome_rowan::{Direction, TextSize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A block of declarations together with the text that introduced it -- a
@@ -478,6 +482,29 @@ pub struct AtRule {
     pub body: Option<String>,
 }
 
+fn read_at_rule(ctx: &ParseCtx, at: &AtRuleRef) -> AtRule {
+    AtRule {
+        name: at.name.clone(),
+        prelude: at.prelude.clone(),
+        target: at.target.clone(),
+        has_block: at.has_block,
+        declarations: at_rule_body(at)
+            .filter(|_| at.placed)
+            .map(|block| {
+                declarations_in_block(ctx, &block)
+                    .iter()
+                    .map(|d| (d.property.clone(), d.value_raw.trim().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        text: ctx.source()[at.start..at.end].to_string(),
+        body: match (at.body_open, at.body_close) {
+            (Some(open), Some(close)) => Some(ctx.source()[open..close].to_string()),
+            _ => None,
+        },
+    }
+}
+
 /// Every **top-level** at-rule named `name`, optionally narrowed to those
 /// `matching` names -- see [`crate::locate::AtRuleRef::matches`].
 ///
@@ -497,25 +524,22 @@ pub fn get_at_rules(
         Ok(find_at_rules_named(ctx, &wanted)
             .iter()
             .filter(|at| at.matches(want.as_deref()))
-            .map(|at| AtRule {
-                name: at.name.clone(),
-                prelude: at.prelude.clone(),
-                target: at.target.clone(),
-                has_block: at.has_block,
-                declarations: at_rule_body(at)
-                    .map(|block| {
-                        declarations_in_block(ctx, &block)
-                            .iter()
-                            .map(|d| (d.property.clone(), d.value_raw.trim().to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                text: ctx.source()[at.start..at.end].to_string(),
-                body: match (at.body_open, at.body_close) {
-                    (Some(open), Some(close)) => Some(ctx.source()[open..close].to_string()),
-                    _ => None,
-                },
-            })
+            .map(|at| read_at_rule(ctx, at))
+            .collect())
+    })
+}
+
+/// Every at-rule in the file, in source order, wherever it is: nested in
+/// `@media`, `@layer`, a rule or another at-rule's block, or where the parser
+/// could not place one -- see [`crate::locate::find_every_at_rule`].
+///
+/// For a caller that has to know everything a stylesheet asks for, such as one
+/// that keeps a build tool from reading files, rather than for a codemod.
+pub fn list_at_rules(source: &str, options: ParseOptions) -> Result<Vec<AtRule>> {
+    query(source, options, |ctx| {
+        Ok(find_every_at_rule(ctx)
+            .iter()
+            .map(|at| read_at_rule(ctx, at))
             .collect())
     })
 }
@@ -634,9 +658,231 @@ pub fn analyze(source: &str, options: ParseOptions) -> Result<Analysis> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Validation {
     pub valid: bool,
+    /// How many diagnostics the parser raised, before any of them is set aside
+    /// as an error it raises against valid CSS. `errors` is the verdict.
     pub diagnostics: usize,
     pub round_trips: bool,
     pub message: String,
+    pub errors: Vec<Diagnostic>,
+}
+
+/// One reason a stylesheet or a block is not valid, placed in the text the
+/// caller handed over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub message: String,
+    /// 1-based.
+    pub line: usize,
+    /// 1-based, counted in characters from the start of the line.
+    pub column: usize,
+    /// Byte offset of the start of `text`.
+    pub offset: usize,
+    /// The text the error is about; empty when it is about the end of the text.
+    pub text: String,
+}
+
+impl Validation {
+    fn refused(message: String) -> Self {
+        Validation {
+            valid: false,
+            diagnostics: 0,
+            round_trips: false,
+            errors: vec![Diagnostic {
+                message: message.clone(),
+                line: 1,
+                column: 1,
+                offset: 0,
+                text: String::new(),
+            }],
+            message,
+        }
+    }
+
+    fn of(reading: &Reading, errors: Vec<Diagnostic>) -> Self {
+        let round_trips = reading.round_trips;
+        let message = if !round_trips {
+            "the parser did not reproduce the input byte for byte; refusing to patch this file"
+                .to_string()
+        } else {
+            match errors.as_slice() {
+                [] => "CSS is valid".to_string(),
+                [first, ..] => format!(
+                    "CSS parsed with {} diagnostic(s); the first is at line {}, column {}: {}",
+                    errors.len(),
+                    first.line,
+                    first.column,
+                    one_line(&first.message)
+                ),
+            }
+        };
+        Validation {
+            valid: round_trips && errors.is_empty(),
+            diagnostics: reading.diagnostics,
+            round_trips,
+            message,
+            errors,
+        }
+    }
+}
+
+/// A stylesheet parsed as CSS Syntax reads an at-rule written last in a block
+/// with no block of its own and no `;`, `.a { @apply p-4 }`: ended by the `}`
+/// that closes the block. Biome 0.5.8 reads that `}`, and what follows up to a
+/// `;` or a `{`, into the at-rule's prelude (see `at_rule_ended_by_its_block`),
+/// so the text is parsed again with a `;` before the `}`, which CSS Syntax
+/// reads the same way. One at a time, in source order: until then, a parse
+/// misreads everything after the first one.
+struct Reading {
+    /// The parse errors are read from.
+    ctx: ParseCtx,
+    /// Where each `;` was put, as offsets in `ctx`'s text, ascending.
+    inserted: Vec<usize>,
+    /// Whether the text as given round-trips, and how many diagnostics the
+    /// parser raised on it.
+    round_trips: bool,
+    diagnostics: usize,
+}
+
+impl Reading {
+    fn new(source: &str, options: ParseOptions) -> Result<Self> {
+        let mut ctx = ParseCtx::try_new(source, options)?;
+        let (round_trips, diagnostics) = (ctx.round_trips(), ctx.diagnostics_count());
+        let bom = if ctx.has_bom() { crate::ctx::BOM } else { "" };
+        let mut inserted: Vec<usize> = Vec::new();
+        // Each `}` gets one `;` at most, so this ends.
+        while let Some(at) =
+            at_rule_ended_by_its_block(&ctx).filter(|&at| !inserted.iter().any(|&q| q + 1 == at))
+        {
+            let text = format!("{bom}{};{}", &ctx.source()[..at], &ctx.source()[at..]);
+            let Ok(next) = ParseCtx::try_new(&text, options) else {
+                break;
+            };
+            for q in inserted.iter_mut().filter(|q| **q >= at) {
+                *q += 1;
+            }
+            inserted.push(at);
+            inserted.sort_unstable();
+            ctx = next;
+        }
+        Ok(Reading {
+            ctx,
+            inserted,
+            round_trips,
+            diagnostics,
+        })
+    }
+
+    /// Offset in the given text of `at` in the parsed one.
+    fn given(&self, at: usize) -> usize {
+        at - self.inserted.iter().filter(|&&q| q < at).count()
+    }
+
+    /// Offset in the parsed text of the byte at `at` in the given one.
+    fn parsed(&self, at: usize) -> usize {
+        // The `k`th `;`, counting from 0, went before byte `q - k` of the given text.
+        at + self
+            .inserted
+            .iter()
+            .enumerate()
+            .filter(|&(k, &q)| q - k <= at)
+            .count()
+    }
+
+    /// `error`, read from the parsed text, placed in the given one.
+    fn given_error(&self, error: &ParseError) -> ParseError {
+        ParseError {
+            message: error.message.clone(),
+            start: self.given(error.start),
+            end: self.given(error.end),
+        }
+    }
+}
+
+/// What is wrong with a parse, in source order: the parser's own errors less
+/// the ones it raises against valid CSS, and the at-rules written inside a
+/// block that are valid only at the top level of a stylesheet.
+fn errors(ctx: &ParseCtx) -> Vec<ParseError> {
+    let mut errors: Vec<ParseError> = ctx
+        .errors()
+        .into_iter()
+        .filter(|e| {
+            !in_free_form_value(ctx, e.start, e.end) && !is_stray_semicolon(ctx, e.start, e.end)
+        })
+        .collect();
+    errors.extend(
+        misplaced_at_rules(ctx)
+            .into_iter()
+            .map(|(name, start, end)| ParseError {
+                message: format!("`@{name}` is valid only at the top level of a stylesheet"),
+                start,
+                end,
+            }),
+    );
+    errors.sort_by_key(|e| (e.start, e.end));
+    errors
+}
+
+/// `error` placed in `text`, whose first byte is at `shift` in the parsed
+/// source. A range that reaches past either end of `text` is clamped to it.
+fn placed(text: &str, shift: usize, error: &ParseError) -> Diagnostic {
+    let clamp = |at: usize| {
+        let mut at = at.saturating_sub(shift).min(text.len());
+        while !text.is_char_boundary(at) {
+            at -= 1;
+        }
+        at
+    };
+    let start = clamp(error.start);
+    let end = clamp(error.end).max(start);
+    let (line, column) = line_and_column(text, start);
+
+    Diagnostic {
+        message: error.message.clone(),
+        line,
+        column,
+        offset: start,
+        text: text[start..end].to_string(),
+    }
+}
+
+/// 1-based line and column of byte `at` in `text`, the column in characters,
+/// as Biome counts them: a line ends at `\n`, `\r\n` or `\r`.
+fn line_and_column(text: &str, at: usize) -> (usize, usize) {
+    let file = SourceFile::new(SourceCode {
+        text,
+        line_starts: None,
+    });
+    TextSize::try_from(at)
+        .ok()
+        .and_then(|at| file.location(at).ok())
+        .map_or((1, 1), |l| (l.line_number.get(), l.column_number.get()))
+}
+
+/// `message` on one line: a line break in the author's text it quotes reads
+/// `\r` or `\n`, as it does in an inspected string.
+fn one_line(message: &str) -> String {
+    message.replace('\r', "\\r").replace('\n', "\\n")
+}
+
+/// The one error for a statement left unfinished, saying what it lacks.
+fn unfinished(source: &str, statement: &Statement) -> ParseError {
+    let message = match &statement.kind {
+        StatementKind::Rule {
+            property: Some(name),
+        } => format!("Expected a `:` after the property name `{name}`"),
+        StatementKind::Rule { property: None } => format!(
+            "Expected a `{{` after the selector `{}`",
+            &source[statement.start..statement.end]
+        ),
+        StatementKind::AtRule(name) => format!("This `@{name}` rule is not finished"),
+        StatementKind::Declaration => "This declaration is not finished".to_string(),
+        StatementKind::Other => "This statement is not finished".to_string(),
+    };
+    ParseError {
+        message: one_line(&message),
+        start: statement.start,
+        end: statement.end,
+    }
 }
 
 /// Is this CSS understood well enough to patch?
@@ -644,44 +890,134 @@ pub struct Validation {
 /// "Valid" here means: the parser reproduced the input byte for byte **and**
 /// raised no errors. The round-trip half is the one that actually matters for
 /// safety -- it is what every codemod checks before touching a file.
+///
+/// The errors are the parser's, less the ones Biome 0.5.8 raises against valid
+/// CSS (see `in_free_form_value`, `is_stray_semicolon` and `Reading`), plus an
+/// `@import`, `@charset` or `@namespace` written inside a block, which it does
+/// not raise.
 pub fn validate(source: &str, options: ParseOptions) -> Validation {
     if let Err(e) = crate::ctx::check_nesting(source) {
-        return Validation {
-            valid: false,
-            diagnostics: 0,
-            round_trips: false,
-            message: e.to_string(),
-        };
+        return Validation::refused(e.to_string());
     }
-    let ctx = match ParseCtx::try_new(source, options) {
-        Ok(c) => c,
-        Err(e) => {
-            return Validation {
-                valid: false,
-                diagnostics: 0,
-                round_trips: false,
-                message: e.to_string(),
+    let reading = match Reading::new(source, options) {
+        Ok(r) => r,
+        Err(e) => return Validation::refused(e.to_string()),
+    };
+    // Offsets are into the source without its byte-order mark, which no editor
+    // shows as a column.
+    let given = source.strip_prefix(crate::ctx::BOM).unwrap_or(source);
+    let bom = source.len() - given.len();
+    let errors = errors(&reading.ctx)
+        .iter()
+        .map(|e| {
+            let mut d = placed(given, 0, &reading.given_error(e));
+            d.offset += bom;
+            d
+        })
+        .collect();
+    Validation::of(&reading, errors)
+}
+
+/// The rule a block is read inside, its body on lines of its own: a body that
+/// ends in a `//` comment, where those are read as comments, cannot then
+/// comment out the closing brace.
+const BLOCK_OPEN: &str = ".block {\n";
+const BLOCK_CLOSE: &str = "\n}\n";
+
+/// Is `body` valid as the contents of one rule's block: declarations, nested
+/// rules and at-rules, what an editor gives a single element?
+///
+/// Read as the parser reads a block, by putting it inside one, with every
+/// error placed in `body` itself. On top of `validate/2`'s checks, a `}` in
+/// `body` that closes the block it was put in is an error: everything after it
+/// would be outside that block, at the top level of whatever stylesheet the
+/// body is written into, and still parse.
+///
+/// No error points into or names the block the body is put in. A declaration
+/// with no `:`, which Biome reads as a rule and raises selector errors
+/// against, is one error on what the author wrote. The errors Biome raises
+/// past the body's end come from the body ending in the middle of something:
+/// a block it opens and leaves open is one error at its end, a statement it
+/// leaves unfinished one error on that statement, and they go when an error
+/// in the body already runs past its end or a `}` closes the block early.
+/// A token the lexer could not read, such as a string with no closing quote,
+/// keeps its own error: what Biome misreads after it is not put down to a
+/// missing `:`, `{` or end. A message quotes the author's text on one line.
+pub fn validate_block(body: &str, options: ParseOptions) -> Validation {
+    if let Err(e) = crate::ctx::check_nesting(body) {
+        return Validation::refused(e.to_string());
+    }
+    let source = format!("{BLOCK_OPEN}{body}{BLOCK_CLOSE}");
+    let reading = match Reading::new(&source, options) {
+        Ok(r) => r,
+        Err(e) => return Validation::refused(e.to_string()),
+    };
+    // Offsets below are in the parsed text, which may hold a `;` the body
+    // does not; errors are placed in the body once read back.
+    let ctx = &reading.ctx;
+
+    let mut found = errors(ctx);
+    let body_start = BLOCK_OPEN.len();
+    let body_end = reading.parsed(body_start + body.len());
+    let block_close = reading.parsed(body_start + body.len() + 1);
+    let closed_early = find_top_level_rules(ctx)
+        .first()
+        .and_then(closing_brace)
+        .filter(|&at| at < body_end);
+    if let Some(at) = closed_early {
+        found.push(ParseError {
+            message: "This `}` closes the block it is written in; everything after it is outside"
+                .to_string(),
+            start: at,
+            end: at + 1,
+        });
+    }
+
+    for (rule, reach) in misread_rules(ctx, body_end) {
+        found.retain(|e| e.start < rule.start || e.start >= reach);
+        found.push(unfinished(ctx.source(), &rule));
+    }
+
+    if found.iter().any(|e| e.start >= body_end) {
+        let explained =
+            closed_early.is_some() || found.iter().any(|e| e.start < body_end && e.end > body_end);
+        if explained {
+            found.retain(|e| e.start < body_end);
+        } else if let Some(open) =
+            opening_brace(ctx, block_close).filter(|&open| open >= body_start)
+        {
+            let (line, column) = line_and_column(body, reading.given(open) - body_start);
+            found.retain(|e| e.start < body_end);
+            found.push(ParseError {
+                message: format!(
+                    "Expected a `}}` to close the `{{` on line {line}, column {column}"
+                ),
+                start: body_end,
+                end: body_end,
+            });
+        } else if let Some(statement) =
+            statement_before(ctx, body_end).filter(|s| s.start >= body_start)
+        {
+            // A token in it the lexer could not read explains the rest, while
+            // its own error is still there to say so.
+            let unread = statement
+                .unread
+                .is_some_and(|at| found.iter().any(|e| e.start >= at && e.start < body_end));
+            if unread {
+                found.retain(|e| e.start < body_end);
+            } else {
+                found.retain(|e| e.start < statement.start);
+                found.push(unfinished(ctx.source(), &statement));
             }
         }
-    };
-    let round_trips = ctx.round_trips();
-    let diagnostics = ctx.diagnostics_count();
-    let has_errors = ctx.has_errors();
-    let valid = round_trips && !has_errors;
-    let message = if !round_trips {
-        "the parser did not reproduce the input byte for byte; refusing to patch this file"
-            .to_string()
-    } else if has_errors {
-        format!("CSS parsed with {diagnostics} diagnostic(s)")
-    } else {
-        "CSS is valid".to_string()
-    };
-    Validation {
-        valid,
-        diagnostics,
-        round_trips,
-        message,
     }
+    found.sort_by_key(|e| (e.start, e.end));
+
+    let errors = found
+        .iter()
+        .map(|e| placed(body, body_start, &reading.given_error(e)))
+        .collect();
+    Validation::of(&reading, errors)
 }
 
 #[cfg(test)]
@@ -784,6 +1120,68 @@ mod tests {
         assert!(found[0]
             .text
             .contains("/* keeps daisyUI off our own .btn */"));
+    }
+
+    fn listed(src: &str) -> Vec<(String, Option<String>)> {
+        list_at_rules(src, ParseOptions::strict())
+            .unwrap()
+            .into_iter()
+            .map(|at| (at.name, at.target))
+            .collect()
+    }
+
+    fn named(name: &str, target: &str) -> (String, Option<String>) {
+        (name.to_string(), Some(target.to_string()))
+    }
+
+    #[test]
+    fn lists_every_at_rule_at_any_depth_in_source_order() {
+        let src = "@import \"a.css\";\n@media print {\n  @import \"b.css\";\n  .a { &:hover { @source \"../c\"; } }\n}\n@layer base { @plugin \"d\"; }\n";
+        assert_eq!(
+            listed(src),
+            vec![
+                named("import", "a.css"),
+                ("media".to_string(), None),
+                named("import", "b.css"),
+                named("source", "../c"),
+                ("layer".to_string(), None),
+                named("plugin", "d"),
+            ]
+        );
+    }
+
+    #[test]
+    fn lists_an_at_rule_the_parser_could_not_place() {
+        // CSS has no at-rule inside `@font-face` or a keyframe, so Biome keeps
+        // these as bogus tokens. Tailwind still imports the file.
+        let found = list_at_rules(
+            "@font-face { src: x; @import \"../x.css\"; font-family: a; }",
+            ParseOptions::strict(),
+        )
+        .unwrap();
+        assert_eq!(found[1].name, "import");
+        assert_eq!(found[1].target.as_deref(), Some("../x.css"));
+        assert_eq!(found[1].text, "@import \"../x.css\";");
+        assert!(found[1].declarations.is_empty());
+
+        assert_eq!(
+            listed("@keyframes k { from { @plugin \"p\" { a: b } color: red } }"),
+            vec![("keyframes".to_string(), None), named("plugin", "p")]
+        );
+    }
+
+    #[test]
+    fn an_at_sign_in_a_string_a_comment_or_a_value_starts_nothing() {
+        let src =
+            "/* @import \"a\"; */ .a { content: \"@import 'b';\"; background: url(@import.png); }";
+        assert!(listed(src).is_empty());
+        assert!(listed(".a { b: c @import \"x\"; }").is_empty());
+    }
+
+    #[test]
+    fn a_listed_name_keeps_its_case_folded_and_its_escape_as_written() {
+        assert_eq!(listed("@IMPORT \"a\";"), vec![named("import", "a")]);
+        assert_eq!(listed("@\\69mport \"a\";"), vec![named("\\69mport", "a")]);
     }
 
     #[test]
@@ -1000,6 +1398,421 @@ mod tests {
     #[test]
     fn an_empty_sheet_is_valid() {
         assert!(validate("", opts()).valid);
+    }
+
+    #[test]
+    fn an_error_is_placed_by_line_and_column() {
+        let v = validate(".a {\n  color: red\n  background: blue;\n}\n", opts());
+        assert!(!v.valid);
+        let first = &v.errors[0];
+        assert_eq!((first.line, first.column), (3, 13));
+        assert_eq!(first.text, ": blue");
+        assert!(v.message.contains("line 3, column 13"), "{}", v.message);
+
+        // A line ends at `\r` too, as Biome reads it.
+        let v = validate(".a {\r  color: red\r  background: blue;\r}\r", opts());
+        assert_eq!((v.errors[0].line, v.errors[0].column), (3, 13));
+    }
+
+    #[test]
+    fn a_column_counts_characters_not_bytes() {
+        let v = validate(".é { content: \"ü\" color: red; }", opts());
+        // `: red` is the 24th character and the 26th byte.
+        assert_eq!((v.errors[0].column, v.errors[0].offset), (24, 25));
+    }
+
+    // Biome 0.5.8 refuses a `:` in a value; a custom property's value may hold
+    // one, and Bootstrap 3 ships `progid:` filters.
+    #[test]
+    fn a_colon_in_a_free_form_value_is_valid() {
+        for src in [
+            ".a { --x: a:b; }",
+            ".a { --x: [a:b]; }",
+            ".a { --x: a:b !important; }",
+            ".a { filter: progid:DXImageTransform.Microsoft.gradient(startColorstr='#80000000'); }",
+            ".a { -ms-filter: PROGID:DXImageTransform.Microsoft.Alpha(Opacity=80); }",
+        ] {
+            let v = validate(src, opts());
+            assert!(v.valid, "{src}: {:?}", v.errors);
+            assert!(
+                v.diagnostics > 0,
+                "{src} no longer trips the parser; drop the exemption"
+            );
+        }
+    }
+
+    #[test]
+    fn a_colon_in_an_ordinary_value_is_not() {
+        assert!(!validate(".a { color: red color: blue; }", opts()).valid);
+        assert!(!validate(".a { --x: a:(b; }", opts()).valid);
+    }
+
+    #[test]
+    fn stray_semicolons_are_nothing() {
+        assert!(validate(".a { color: red;;; gap: 1px }", opts()).valid);
+    }
+
+    #[test]
+    fn an_import_inside_a_block_is_invalid() {
+        let v = validate(".a { @import \"x.css\"; }", opts());
+        assert!(!v.valid);
+        assert_eq!(v.errors[0].text, "@import \"x.css\";");
+        assert!(validate("@import \"x.css\";\n.a {}\n", opts()).valid);
+    }
+
+    // -- blocks -------------------------------------------------------------
+
+    #[test]
+    fn a_block_takes_declarations_nesting_and_tailwind() {
+        for body in [
+            "padding: 20px;\n\n&:hover {\n  transform: translateY(-2px);\n}",
+            "@media (max-width: 900px) { padding: 12px; }",
+            "@supports (display: grid) { display: grid }",
+            "@container card (min-width: 400px) { color: red }",
+            "@layer base { color: red }",
+            "@apply hover:bg-red-500 md:p-4;",
+            "&:hover { @apply hover:underline md:p-2; }",
+            "content: \"}\"; color: red",
+            "/* } */\ngap: 1px;",
+            "& .w-\\[10px\\] { gap: 1px; }",
+            "body { display: none; }",
+            "",
+        ] {
+            let v = validate_block(body, opts());
+            assert!(v.valid, "{body:?}: {:?}", v.errors);
+        }
+    }
+
+    #[test]
+    fn a_block_error_is_placed_in_the_body() {
+        let v = validate_block("gap: 1px;\ncolor: red background: blue;", opts());
+        assert_eq!(v.errors.len(), 1);
+        assert_eq!((v.errors[0].line, v.errors[0].column), (2, 22));
+        assert_eq!(v.errors[0].offset, 31);
+        assert_eq!(v.errors[0].text, ": blue");
+    }
+
+    #[test]
+    fn a_block_closed_by_its_own_body_is_invalid() {
+        for (body, column) in [
+            ("gap: 1px; } body { display: none; ", 11),
+            ("} &:hover { gap: 1px; }", 1),
+            ("--x: a:b }", 10),
+        ] {
+            let v = validate_block(body, opts());
+            assert!(!v.valid, "{body:?}");
+            let early = v
+                .errors
+                .iter()
+                .find(|e| e.message.contains("closes the block"))
+                .unwrap_or_else(|| panic!("{body:?}: {:?}", v.errors));
+            assert_eq!(
+                (early.line, early.column, early.text.as_str()),
+                (1, column, "}")
+            );
+        }
+    }
+
+    #[test]
+    fn a_block_left_open_is_invalid_at_its_end() {
+        let v = validate_block("&:hover { gap: 1px;", opts());
+        assert!(!v.valid);
+        let last = v.errors.last().unwrap();
+        assert_eq!((last.line, last.column, last.text.as_str()), (1, 20, ""));
+    }
+
+    fn only_error(body: &str) -> (usize, usize, String, String) {
+        let v = validate_block(body, opts());
+        assert!(!v.valid, "{body:?}");
+        assert_eq!(v.errors.len(), 1, "{body:?}: {:?}", v.errors);
+        let e = &v.errors[0];
+        (e.line, e.column, e.text.clone(), e.message.clone())
+    }
+
+    fn row(
+        line: usize,
+        column: usize,
+        text: &str,
+        message: &str,
+    ) -> (usize, usize, String, String) {
+        (line, column, text.to_string(), message.to_string())
+    }
+
+    // Biome reads `color crimson` as a nested rule, the block's own `}` and
+    // everything after it up to a `{` included, and raises selector errors
+    // there and past the body's end.
+    #[test]
+    fn a_declaration_with_no_colon_is_one_error_on_what_was_written() {
+        let missing = "Expected a `:` after the property name `color`";
+        for (body, at) in [
+            ("color crimson", (1, 1)),
+            ("color crimson;", (1, 1)),
+            ("color crimson /* c */ ", (1, 1)),
+            ("gap: 1px;\ncolor crimson", (2, 1)),
+            ("gap: 1px;\ncolor crimson;\nmargin: 0;", (2, 1)),
+            ("gap: 1px;\r\n  color crimson", (2, 3)),
+            ("gap: 1px;\r  color crimson", (2, 3)),
+            ("color crimson; &:hover { gap: 1px }", (1, 1)),
+            ("&:hover { color crimson; }", (1, 11)),
+            ("&:hover { color crimson }", (1, 11)),
+            ("@media print { color crimson }", (1, 16)),
+        ] {
+            assert_eq!(
+                only_error(body),
+                row(at.0, at.1, "color crimson", missing),
+                "{body:?}"
+            );
+        }
+        assert_eq!(
+            only_error("width 10px !important"),
+            row(
+                1,
+                1,
+                "width 10px !important",
+                "Expected a `:` after the property name `width`"
+            )
+        );
+    }
+
+    #[test]
+    fn an_unfinished_statement_is_one_error_on_what_was_written() {
+        for (body, expected) in [
+            (
+                "gap: 1px;\n&:hover",
+                row(
+                    2,
+                    1,
+                    "&:hover",
+                    "Expected a `{` after the selector `&:hover`",
+                ),
+            ),
+            (
+                "div > span",
+                row(
+                    1,
+                    1,
+                    "div > span",
+                    "Expected a `{` after the selector `div > span`",
+                ),
+            ),
+            (
+                "@media (min-width: 1px)",
+                row(
+                    1,
+                    1,
+                    "@media (min-width: 1px)",
+                    "This `@media` rule is not finished",
+                ),
+            ),
+            (
+                "gap: 1px;\ncolor: var(--x",
+                row(2, 1, "color: var(--x", "This declaration is not finished"),
+            ),
+        ] {
+            assert_eq!(only_error(body), expected, "{body:?}");
+        }
+    }
+
+    #[test]
+    fn a_block_left_open_is_one_error_naming_its_brace() {
+        for (body, at, message) in [
+            (
+                "&:hover { gap: 1px;",
+                (1, 20),
+                "Expected a `}` to close the `{` on line 1, column 9",
+            ),
+            (
+                "gap: 1px;\n&:hover {\n  &:focus { gap: 1px; }",
+                (3, 24),
+                "Expected a `}` to close the `{` on line 2, column 9",
+            ),
+            (
+                "gap: 1px;\r&:hover {\r  &:focus { gap: 1px; }",
+                (3, 24),
+                "Expected a `}` to close the `{` on line 2, column 9",
+            ),
+        ] {
+            assert_eq!(only_error(body), row(at.0, at.1, "", message), "{body:?}");
+        }
+    }
+
+    #[test]
+    fn an_error_running_past_the_end_explains_the_rest() {
+        let (_, _, _, message) = only_error("/* never closed\ngap: 1px;");
+        assert_eq!(message, "Unterminated block comment");
+        assert_eq!(only_error("background: url(x").2, "x");
+    }
+
+    // The lexer ends a string with no closing quote at the line's end; Biome
+    // then reads the rest of the selector, its block included, as one rule
+    // with no `{`.
+    #[test]
+    fn a_string_left_open_keeps_its_own_error() {
+        let quote = "Missing closing quote";
+        for (body, at, text) in [
+            ("&[data-x=\"a\nb\"] { gap: 1px; }", (1, 10), "\"a"),
+            ("&[data-x='a\nb'] { gap: 1px; }", (1, 10), "'a"),
+            ("&[x=\"a\nb\"] {\n  gap: 1px;\n}", (1, 5), "\"a"),
+            ("@media (x: \"a", (1, 12), "\"a"),
+            ("--x: [\"abc", (1, 7), "\"abc"),
+        ] {
+            let v = validate_block(body, opts());
+            assert!(!v.valid, "{body:?}");
+            let e = &v.errors[0];
+            assert_eq!(
+                (e.line, e.column, e.text.as_str(), e.message.as_str()),
+                (at.0, at.1, text, quote),
+                "{body:?}: {:?}",
+                v.errors
+            );
+            assert!(
+                v.errors.iter().all(|e| e.message == quote),
+                "{body:?}: {:?}",
+                v.errors
+            );
+        }
+
+        let v = validate_block("color crimson;\n&[data-x=\"a\nb\"] { gap: 1px; }", opts());
+        let found: Vec<_> = v
+            .errors
+            .iter()
+            .map(|e| (e.line, e.column, e.message.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (1, 1, "Expected a `:` after the property name `color`"),
+                (2, 10, quote),
+                (3, 2, quote)
+            ]
+        );
+    }
+
+    // A custom property takes any run of tokens, a `:` included, but a string
+    // its line leaves open is a bad string to CSS Syntax, which none takes.
+    #[test]
+    fn a_string_left_open_in_a_custom_property_is_refused() {
+        let quote = "Missing closing quote";
+        assert_eq!(only_error("--x: \"abc"), row(1, 6, "\"abc", quote));
+        assert_eq!(
+            only_error("--x: a:b;\n--y: 'abc;\ngap: 1px;"),
+            row(2, 6, "'abc;", quote)
+        );
+
+        let v = validate(".a { --x: \"abc\n}", opts());
+        assert_eq!(v.errors.len(), 1, "{:?}", v.errors);
+        let e = &v.errors[0];
+        assert_eq!(
+            (e.line, e.column, e.text.as_str(), e.message.as_str()),
+            (1, 11, "\"abc", quote)
+        );
+
+        assert!(validate_block("--x: a:b; --y: \"a:b\";", opts()).valid);
+    }
+
+    #[test]
+    fn a_message_quotes_the_authors_text_on_one_line() {
+        assert_eq!(
+            only_error("&:hover\n.b"),
+            row(
+                1,
+                1,
+                "&:hover\n.b",
+                "Expected a `{` after the selector `&:hover\\n.b`"
+            )
+        );
+        assert_eq!(
+            only_error("gap: 1px;\r\n&:hover\r\n.b").3,
+            "Expected a `{` after the selector `&:hover\\r\\n.b`"
+        );
+
+        // Biome quotes what it found, a string's escaped line break included.
+        let v = validate_block("\"a\\\nb\" { gap: 1px; }", opts());
+        assert!(v.errors[0].message.contains('\n'), "{:?}", v.errors);
+        assert!(!v.message.contains('\n'), "{}", v.message);
+    }
+
+    // CSS Syntax ends an at-rule with no block at the `}` of the block it is
+    // written in; Biome 0.5.8 reads that `}`, and what follows, into its prelude.
+    #[test]
+    fn an_at_rule_last_in_a_block_needs_no_semicolon() {
+        for src in [
+            ".a { @apply p-4 }",
+            ".a { @apply hover:bg-red-500 md:p-4 /* c */ }",
+            ".a { @apply p-4 }\n.b { color: red; }",
+            ".a { @apply p-4 } .b { &:hover { @apply p-2 } }",
+            "@media print { .a { @apply p-4 } }",
+            ".a { @apply p-4\n  color: red }",
+            ".a { @apply p-4 gap: 1px }",
+            ".a { @foo (min-width: 1px) }",
+            ".a { @apply foo(a: b) }",
+            ".a { @apply }",
+        ] {
+            let v = validate(src, opts());
+            assert!(v.valid, "{src}: {:?}", v.errors);
+            assert!(
+                v.diagnostics > 0,
+                "{src} no longer trips the parser; drop `Reading`"
+            );
+        }
+        for body in [
+            "@apply p-4",
+            "padding: 4px;\n@apply p-4",
+            "&:hover { @apply p-4 }",
+            "@apply p-4\ncolor: red",
+            "@apply p-4 gap: 1px",
+        ] {
+            let v = validate_block(body, opts());
+            assert!(v.valid, "{body:?}: {:?}", v.errors);
+        }
+    }
+
+    #[test]
+    fn an_error_after_an_at_rule_ended_by_its_block_keeps_its_place() {
+        let v = validate(
+            "\u{feff}.a { @apply p-4 }\n.b { color: red background: blue; }",
+            opts(),
+        );
+        assert_eq!(v.errors.len(), 1, "{:?}", v.errors);
+        let e = &v.errors[0];
+        assert_eq!(
+            (e.line, e.column, e.offset, e.text.as_str()),
+            (2, 27, 47, ": blue")
+        );
+
+        let (line, column, text, _) =
+            only_error("&:hover { @apply p-4 }\ncolor: red background: blue;");
+        assert_eq!((line, column, text.as_str()), (2, 22, ": blue"));
+        assert_eq!(
+            only_error("&:hover { gap: 1px; @apply p-4"),
+            row(
+                1,
+                31,
+                "",
+                "Expected a `}` to close the `{` on line 1, column 9"
+            )
+        );
+    }
+
+    // A `}` inside a bracket is part of that bracket's block, and an at-rule
+    // Biome knows the grammar of, `@media`, still needs a block of its own.
+    #[test]
+    fn an_at_rule_its_block_does_not_end_is_still_an_error() {
+        assert_eq!(
+            only_error("@apply foo(a"),
+            row(1, 1, "@apply foo(a", "This `@apply` rule is not finished")
+        );
+        for src in [".a { @apply foo(a }", ".a { @media print }"] {
+            assert!(!validate(src, opts()).valid, "{src}");
+        }
+    }
+
+    #[test]
+    fn a_comment_or_string_left_open_is_invalid() {
+        assert!(!validate_block("/* never closed\ngap: 1px;", opts()).valid);
+        assert!(!validate_block("content: \"abc\ncolor: red;", opts()).valid);
+        assert!(!validate_block("width: calc(1px + 2px;", opts()).valid);
+        assert!(!validate_block("&[data-open { gap: 1px; }", opts()).valid);
     }
 
     #[test]

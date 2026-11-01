@@ -12,9 +12,9 @@
 //!   * more than one match is `MatchResult::Ambiguous` -- we error, we do not
 //!     pick one, because guessing produces surprising diffs.
 
-use crate::ctx::{is_bogus, ParseCtx};
-use biome_css_syntax::{CssSyntaxKind, CssSyntaxNode};
-use biome_rowan::{Direction, TextRange};
+use crate::ctx::ParseCtx;
+use biome_css_syntax::{CssSyntaxKind, CssSyntaxNode, CssSyntaxToken};
+use biome_rowan::{Direction, SyntaxKind, TextRange, TextSize};
 
 // ---------------------------------------------------------------------------
 // References
@@ -72,6 +72,9 @@ pub struct AtRuleRef {
     /// Present only when `has_block`.
     pub body_open: Option<usize>,
     pub body_close: Option<usize>,
+    /// False for an `@` the parser could not place in an at-rule -- see
+    /// [`find_every_at_rule`]. Its `node` is then the one the `@` sits in.
+    pub placed: bool,
 }
 
 impl AtRuleRef {
@@ -165,10 +168,13 @@ pub fn at_rule_body(at: &AtRuleRef) -> Option<CssSyntaxNode> {
 }
 
 fn block_child(node: &CssSyntaxNode) -> Option<CssSyntaxNode> {
-    node.children().find(|c| {
-        c.first_token()
-            .is_some_and(|t| t.kind() == CssSyntaxKind::L_CURLY)
-    })
+    node.children().find(is_block)
+}
+
+/// Does `node` open with `{`?
+fn is_block(node: &CssSyntaxNode) -> bool {
+    node.first_token()
+        .is_some_and(|t| t.kind() == CssSyntaxKind::L_CURLY)
 }
 
 fn block_bounds(block: &CssSyntaxNode) -> Option<(usize, usize)> {
@@ -466,6 +472,114 @@ fn at_rule_ref_from(node: &CssSyntaxNode, ctx: &ParseCtx) -> Option<AtRuleRef> {
         has_block,
         body_open,
         body_close,
+        placed: true,
+    })
+}
+
+/// The at-rule an `@` starts where the parser could not place one, read from
+/// the tokens that follow it: the name written against the `@`, then up to the
+/// `;` that ends it or the `}` that closes its block. A `}` closing the block
+/// the `@` sits in ends it first.
+///
+/// `None` for an `@` with no name against it -- an identifier or a keyword
+/// Biome lexes as one, not `;` or `(` -- or one that does not start a
+/// statement -- first in the file or after a `;`, `{` or `}`, comments aside --
+/// because after anything else it is part of a selector or a value
+/// (`url(@x.png)`), as every reader of CSS takes it.
+fn stray_at_rule_ref(ctx: &ParseCtx, at: &CssSyntaxToken) -> Option<AtRuleRef> {
+    let starts_statement = at.prev_token().is_none_or(|token| {
+        matches!(
+            token.kind(),
+            CssSyntaxKind::SEMICOLON | CssSyntaxKind::L_CURLY | CssSyntaxKind::R_CURLY
+        )
+    });
+    if !starts_statement {
+        return None;
+    }
+    let (start, at_end) = range_to_pair(at.text_trimmed_range());
+    let name_token = at.next_token()?;
+    let (name_start, name_end) = range_to_pair(name_token.text_trimmed_range());
+    let named =
+        name_token.kind() == CssSyntaxKind::IDENT || name_token.kind().is_contextual_keyword();
+    if name_start != at_end || !named {
+        return None;
+    }
+
+    let mut end = name_end;
+    let mut depth = 0usize;
+    let mut prelude_end = None;
+    let mut body_open = None;
+    let mut body_close = None;
+    let mut target = None;
+    let mut prelude_norm = Vec::new();
+    let mut cursor = name_token.next_token();
+
+    while let Some(token) = cursor {
+        let (token_start, token_end) = range_to_pair(token.text_trimmed_range());
+        match token.kind() {
+            CssSyntaxKind::EOF => break,
+            CssSyntaxKind::SEMICOLON if depth == 0 => {
+                prelude_end.get_or_insert(token_start);
+                end = token_end;
+                break;
+            }
+            CssSyntaxKind::L_CURLY => {
+                if depth == 0 {
+                    prelude_end.get_or_insert(token_start);
+                    body_open = Some(token_end);
+                }
+                depth += 1;
+                end = token_end;
+            }
+            CssSyntaxKind::R_CURLY if depth == 0 => break,
+            CssSyntaxKind::R_CURLY => {
+                depth -= 1;
+                end = token_end;
+                if depth == 0 {
+                    body_close = Some(token_start);
+                    break;
+                }
+            }
+            kind => {
+                if prelude_end.is_none() {
+                    if target.is_none() {
+                        target = match kind {
+                            CssSyntaxKind::CSS_STRING_LITERAL => {
+                                Some(unquote(token.text_trimmed()))
+                            }
+                            CssSyntaxKind::CSS_URL_VALUE_RAW_LITERAL => {
+                                Some(token.text_trimmed().trim().to_string())
+                            }
+                            _ => None,
+                        };
+                    }
+                    prelude_norm.push(token.text_trimmed().to_string());
+                }
+                end = token_end;
+            }
+        }
+        cursor = token.next_token();
+    }
+
+    let prelude_end = prelude_end.unwrap_or(end);
+    Some(AtRuleRef {
+        node: at.parent()?,
+        name: name_token.text_trimmed().trim().to_lowercase(),
+        prelude: ctx
+            .source()
+            .get(name_end..prelude_end.max(name_end))
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        prelude_norm: prelude_norm.join(" "),
+        target,
+        start,
+        end,
+        has_block: body_open.is_some(),
+        body_open,
+        // An unclosed block runs to the end of the at-rule's text.
+        body_close: body_open.map(|_| body_close.unwrap_or(end)),
+        placed: false,
     })
 }
 
@@ -571,6 +685,24 @@ pub fn find_all_at_rules(ctx: &ParseCtx) -> Vec<AtRuleRef> {
     ctx.syntax()
         .descendants()
         .filter_map(|n| at_rule_ref_from(&n, ctx))
+        .collect()
+}
+
+/// Every at-rule in the file, in source order: each one [`find_all_at_rules`]
+/// finds, at any depth, and each `@` the parser could not place in an at-rule,
+/// such as an `@import` inside `@font-face` or a keyframe. Biome keeps those as
+/// bogus tokens, but a reader with a looser grammar -- Tailwind, for one -- still
+/// acts on them, so a caller deciding what a stylesheet may ask for has to see
+/// them too. An `@` inside a string, a comment or a `url()` is part of that
+/// token and starts nothing.
+pub fn find_every_at_rule(ctx: &ParseCtx) -> Vec<AtRuleRef> {
+    ctx.syntax()
+        .descendants_tokens(Direction::Next)
+        .filter(|token| token.kind() == CssSyntaxKind::AT)
+        .filter_map(|at| match at.parent() {
+            Some(node) if node.kind() == CssSyntaxKind::CSS_AT_RULE => at_rule_ref_from(&node, ctx),
+            _ => stray_at_rule_ref(ctx, &at),
+        })
         .collect()
 }
 
@@ -773,7 +905,7 @@ pub fn top_of_file_anchor(ctx: &ParseCtx) -> usize {
     // that appear before the first rule.
     let first_rule_start = top_level_nodes(ctx)
         .iter()
-        .filter(|n| !is_bogus(n.kind()))
+        .filter(|n| !n.kind().is_bogus())
         .map(|n| usize::from(n.text_trimmed_range().start()))
         .find(|start| *start >= anchor);
 
@@ -837,6 +969,390 @@ pub fn all_comments(ctx: &ParseCtx) -> Vec<(usize, usize, String)> {
     out.sort_by_key(|(s, _, _)| *s);
     out.dedup_by_key(|(s, _, _)| *s);
     out
+}
+
+// ---------------------------------------------------------------------------
+// Errors the parser raises against valid CSS, and errors it does not raise
+// ---------------------------------------------------------------------------
+
+/// Byte offset of the `}` that closes `rule`'s own block, or `None` when the
+/// block is never closed.
+pub fn closing_brace(rule: &RuleRef) -> Option<usize> {
+    let block = block_child(&rule.node)?;
+    block
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| t.kind() == CssSyntaxKind::R_CURLY)
+        .map(|t| usize::from(t.text_trimmed_range().start()))
+}
+
+/// The smallest node whose range covers `start..end`.
+fn covering_node(ctx: &ParseCtx, start: usize, end: usize) -> Option<CssSyntaxNode> {
+    let start = u32::try_from(start).ok()?;
+    let end = u32::try_from(end).ok()?;
+    let range = TextRange::new(start.into(), end.into());
+    if !ctx.syntax().text_range().contains_range(range) {
+        return None;
+    }
+    match ctx.syntax().covering_element(range) {
+        biome_rowan::SyntaxElement::Node(node) => Some(node),
+        biome_rowan::SyntaxElement::Token(token) => token.parent(),
+    }
+}
+
+/// Is `start..end` a string the lexer could not end, `"abc` with its line or
+/// the text ending before the closing quote? CSS Syntax reads it as a bad
+/// string, which ends the declaration it is in as invalid.
+fn is_open_string(ctx: &ParseCtx, start: usize, end: usize) -> bool {
+    let (Ok(start), Ok(end)) = (u32::try_from(start), u32::try_from(end)) else {
+        return false;
+    };
+    let range = TextRange::new(start.into(), end.into());
+    if !ctx.syntax().text_range().contains_range(range) {
+        return false;
+    }
+    match ctx.syntax().covering_element(range) {
+        biome_rowan::SyntaxElement::Token(token) => {
+            token.kind() == CssSyntaxKind::ERROR_TOKEN
+                && token.text_trimmed_range() == range
+                && token.text_trimmed().starts_with(['"', '\''])
+        }
+        biome_rowan::SyntaxElement::Node(_) => false,
+    }
+}
+
+/// Is `start..end` inside a declaration value whose grammar is any run of
+/// tokens, where Biome 0.5.8 raises an error the specification does not?
+///
+/// * A custom property's value, `--x: a:b`: CSS Custom Properties takes any
+///   tokens there, a `:` included. Biome reads it as an ordinary value and
+///   refuses the colon.
+/// * A legacy `progid:` filter, `filter: progid:DXImageTransform…(…)`, which old
+///   Internet Explorer read and vendored stylesheets such as Bootstrap 3 still
+///   carry.
+///
+/// Only while every `(`, `[` and `{` in the value is closed inside it. The
+/// specification reads an open one to its match, braces included, so it
+/// swallows everything after it; Biome ends the declaration at the next `;`
+/// instead, and the value would look harmless here when it is not.
+///
+/// Never for a string left open (see `is_open_string`), which no value takes.
+pub fn in_free_form_value(ctx: &ParseCtx, start: usize, end: usize) -> bool {
+    if is_open_string(ctx, start, end) {
+        return false;
+    }
+    let Some(node) = covering_node(ctx, start, end) else {
+        return false;
+    };
+    let Some(property) = node.ancestors().find(|n| {
+        matches!(
+            n.kind(),
+            CssSyntaxKind::CSS_GENERIC_PROPERTY | CssSyntaxKind::CSS_BOGUS_PROPERTY
+        )
+    }) else {
+        return false;
+    };
+    let Some(colon) = property
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| t.kind() == CssSyntaxKind::COLON)
+    else {
+        return false;
+    };
+    let value_start = usize::from(colon.text_trimmed_range().end());
+    if start < value_start {
+        return false;
+    }
+
+    let value: Vec<_> = property
+        .descendants_tokens(Direction::Next)
+        .filter(|t| usize::from(t.text_trimmed_range().start()) >= value_start)
+        .collect();
+    let custom = property
+        .first_child()
+        .is_some_and(|name| name.kind() == CssSyntaxKind::CSS_DASHED_IDENTIFIER);
+    let progid = matches!(
+        value.as_slice(),
+        [first, second, ..]
+            if first.text_trimmed().eq_ignore_ascii_case("progid")
+                && second.kind() == CssSyntaxKind::COLON
+    );
+
+    (custom || progid) && brackets_close(&value)
+}
+
+/// Does every `(`, `[` and `{` among `tokens` meet its own closer, in order?
+fn brackets_close(tokens: &[biome_rowan::SyntaxToken<biome_css_syntax::CssLanguage>]) -> bool {
+    let mut open: Vec<CssSyntaxKind> = Vec::new();
+    for token in tokens {
+        match token.kind() {
+            CssSyntaxKind::L_PAREN => open.push(CssSyntaxKind::R_PAREN),
+            CssSyntaxKind::L_BRACK => open.push(CssSyntaxKind::R_BRACK),
+            CssSyntaxKind::L_CURLY => open.push(CssSyntaxKind::R_CURLY),
+            kind @ (CssSyntaxKind::R_PAREN | CssSyntaxKind::R_BRACK | CssSyntaxKind::R_CURLY)
+                if open.pop() != Some(kind) =>
+            {
+                return false
+            }
+            _ => {}
+        }
+    }
+    open.is_empty()
+}
+
+/// Is `start..end` a `;` the parser refused as an item of a block?
+///
+/// CSS Syntax skips a `;` among a block's contents however many stand
+/// together. Biome 0.5.8 takes one empty declaration (`a;;`) and raises an
+/// error on the next (`a;;;`).
+pub fn is_stray_semicolon(ctx: &ParseCtx, start: usize, end: usize) -> bool {
+    let Some(node) = covering_node(ctx, start, end) else {
+        return false;
+    };
+    let in_block = node.parent().is_some_and(|p| {
+        matches!(
+            p.kind(),
+            CssSyntaxKind::CSS_DECLARATION_OR_RULE_LIST
+                | CssSyntaxKind::CSS_DECLARATION_LIST
+                | CssSyntaxKind::CSS_DECLARATION_OR_AT_RULE_LIST
+        )
+    });
+    node.kind().is_bogus()
+        && in_block
+        && node
+            .descendants_tokens(Direction::Next)
+            .all(|t| t.kind() == CssSyntaxKind::SEMICOLON)
+}
+
+/// Byte offset of the first `}` Biome read into an at-rule's prelude where CSS
+/// Syntax ends the at-rule with it: one written last in a block, with no block
+/// of its own and no `;`, such as `.a { @apply p-4 }`. That `}` closes the
+/// block the at-rule is in; Biome 0.5.8 reads on to the next `;` or `{`, and
+/// misreads everything up to there.
+///
+/// Only for a `}` outside every bracket in the prelude: in `@apply foo(a }` it
+/// is part of the `(`'s block, and the at-rule runs on past it. What the
+/// prelude says, `@apply p-4 gap: 1px` included, is the at-rule's to check.
+pub fn at_rule_ended_by_its_block(ctx: &ParseCtx) -> Option<usize> {
+    let prelude = ctx
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == CssSyntaxKind::CSS_UNKNOWN_AT_RULE_COMPONENT_LIST)
+        .find(|n| {
+            n.children_with_tokens()
+                .any(|e| e.kind() == CssSyntaxKind::R_CURLY)
+        })?;
+    prelude
+        .parent()?
+        .parent()
+        .filter(|n| n.kind() == CssSyntaxKind::CSS_AT_RULE && is_statement(n))?;
+    let tokens: Vec<_> = prelude.descendants_tokens(Direction::Next).collect();
+    let close = tokens
+        .iter()
+        .position(|t| t.kind() == CssSyntaxKind::R_CURLY)?;
+    (brackets_close(&tokens[..close]) && tokens[close].parent().as_ref() == Some(&prelude))
+        .then(|| usize::from(tokens[close].text_trimmed_range().start()))
+}
+
+/// At-rules that are valid only at the top level of a stylesheet, written
+/// inside a block instead, as `(name, start, end)`.
+///
+/// Biome 0.5.8 parses `.a { @import "x.css"; }` without an error, though CSS
+/// Cascade and CSS Nesting make it invalid there, and Tailwind refuses to build
+/// a stylesheet that does it.
+pub fn misplaced_at_rules(ctx: &ParseCtx) -> Vec<(String, usize, usize)> {
+    ctx.syntax()
+        .descendants()
+        .filter_map(|n| {
+            let name = match n.kind() {
+                CssSyntaxKind::CSS_IMPORT_AT_RULE => "import",
+                CssSyntaxKind::CSS_CHARSET_AT_RULE => "charset",
+                CssSyntaxKind::CSS_NAMESPACE_AT_RULE => "namespace",
+                _ => return None,
+            };
+            let at_rule = n.parent()?;
+            let top_level = at_rule.parent().is_some_and(|list| {
+                list.parent()
+                    .is_some_and(|p| p.kind() == CssSyntaxKind::CSS_ROOT)
+            });
+            if top_level {
+                return None;
+            }
+            let (start, end) = trimmed(&at_rule);
+            Some((name.to_string(), start, end))
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Statements left unfinished
+// ---------------------------------------------------------------------------
+
+/// What a statement in a block is, enough to say what it lacks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StatementKind {
+    Declaration,
+    /// A rule. `property` is the name its selector starts with when that reads
+    /// as a declaration with no `:`, which Biome parses as a rule.
+    Rule {
+        property: Option<String>,
+    },
+    /// An at-rule, with its name as written.
+    AtRule(String),
+    Other,
+}
+
+/// A declaration, rule or at-rule written in a block, as far as the author
+/// wrote it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Statement {
+    pub kind: StatementKind,
+    pub start: usize,
+    /// End of its last token before the limit it was read to. A rule ends
+    /// before the first `;` or `}` in its selector, where the author ended it
+    /// or the block it is in ends.
+    pub end: usize,
+    /// Start of the first token in it before the limit that the lexer could
+    /// not read, such as a string with no closing quote.
+    pub unread: Option<usize>,
+}
+
+/// Is `node` an item of a block: something written between a `{` and its `}`?
+fn is_statement(node: &CssSyntaxNode) -> bool {
+    node.parent()
+        .and_then(|list| list.parent())
+        .is_some_and(|block| is_block(&block))
+}
+
+/// The name a rule's selector starts with, when nothing but a space or its end
+/// follows: `color crimson`, `width 10px`. That is a declaration whose `:` is
+/// missing; an `&`, `.a`, `[x]`, `:hover` or `>` against the name makes it a
+/// selector.
+fn property_name(rule: &CssSyntaxNode) -> Option<String> {
+    let name = rule.first_token()?;
+    let type_selector = name.parent()?.parent()?;
+    let compound = type_selector.parent()?;
+    let bare = type_selector.kind() == CssSyntaxKind::CSS_TYPE_SELECTOR
+        && compound.text_trimmed_range() == type_selector.text_trimmed_range()
+        && compound
+            .next_sibling_or_token()
+            .is_none_or(|next| next.kind() == CssSyntaxKind::CSS_SPACE_LITERAL);
+    bare.then(|| name.text_trimmed().to_string())
+}
+
+/// `node`, a statement, read up to `limit`.
+fn statement(node: &CssSyntaxNode, limit: usize) -> Statement {
+    let kind = match node.kind() {
+        CssSyntaxKind::CSS_NESTED_QUALIFIED_RULE | CssSyntaxKind::CSS_QUALIFIED_RULE => {
+            StatementKind::Rule {
+                property: property_name(node),
+            }
+        }
+        CssSyntaxKind::CSS_AT_RULE => match node.first_token().and_then(|at| at.next_token()) {
+            Some(name) if usize::from(name.text_trimmed_range().start()) < limit => {
+                StatementKind::AtRule(name.text_trimmed().to_string())
+            }
+            _ => StatementKind::Other,
+        },
+        kind if is_declaration_item(kind) => StatementKind::Declaration,
+        _ => StatementKind::Other,
+    };
+    // A rule as written is its selector: Biome reads every token up to the
+    // next `{` into it, past any `;`.
+    let rule = matches!(kind, StatementKind::Rule { .. });
+    let written = if rule { node.first_child() } else { None };
+    let start = trimmed(node).0;
+    let end = written
+        .as_ref()
+        .unwrap_or(node)
+        .descendants_tokens(Direction::Next)
+        .take_while(|t| {
+            usize::from(t.text_trimmed_range().start()) < limit
+                && !(rule && matches!(t.kind(), CssSyntaxKind::SEMICOLON | CssSyntaxKind::R_CURLY))
+        })
+        .filter(|t| t.kind() != CssSyntaxKind::CSS_SPACE_LITERAL)
+        .last()
+        .map_or(start, |t| usize::from(t.text_trimmed_range().end()));
+    let unread = node
+        .descendants_tokens(Direction::Next)
+        .take_while(|t| usize::from(t.text_trimmed_range().start()) < limit)
+        .find(|t| t.kind() == CssSyntaxKind::ERROR_TOKEN)
+        .map(|t| usize::from(t.text_trimmed_range().start()));
+    Statement {
+        kind,
+        start,
+        end,
+        unread,
+    }
+}
+
+/// Nested rules whose selector cannot be one: it holds a `;`, or no `{`
+/// follows it. That is how Biome reads a declaration with no `:`, such as
+/// `color crimson;`, together with everything after it up to the next `{`, or
+/// to the end of the text when there is none. Each comes with the offset
+/// where that reading stops, and is read as written up to `limit`.
+///
+/// A token the lexer could not read, such as a string with no closing quote,
+/// is what Biome misread the rest from: a rule with one in what the author
+/// wrote is not listed, and one after its `;` stops the reading there.
+pub fn misread_rules(ctx: &ParseCtx, limit: usize) -> Vec<(Statement, usize)> {
+    ctx.syntax()
+        .descendants()
+        .filter(|n| n.kind() == CssSyntaxKind::CSS_NESTED_QUALIFIED_RULE)
+        .filter_map(|rule| {
+            let block = block_child(&rule).map(|block| trimmed(&block).0);
+            let semicolon = rule
+                .first_child()?
+                .descendants_tokens(Direction::Next)
+                .any(|t| t.kind() == CssSyntaxKind::SEMICOLON);
+            if !semicolon && block.is_some() {
+                return None;
+            }
+            let read = statement(&rule, limit);
+            if read.unread.is_some_and(|at| at < read.end) {
+                return None;
+            }
+            let reach = block
+                .unwrap_or(usize::MAX)
+                .min(read.unread.unwrap_or(usize::MAX));
+            Some((read, reach))
+        })
+        .collect()
+}
+
+/// Byte offset of the `{` whose block the `}` at `at` closes. `None` when no
+/// `}` token starts there, or Biome read that one into a selector, a value or
+/// an at-rule's prelude instead.
+pub fn opening_brace(ctx: &ParseCtx, at: usize) -> Option<usize> {
+    let offset = TextSize::from(u32::try_from(at).ok()?);
+    if !ctx.syntax().text_range().contains(offset) {
+        return None;
+    }
+    let close = ctx.syntax().token_at_offset(offset).right_biased()?;
+    if close.kind() != CssSyntaxKind::R_CURLY
+        || usize::from(close.text_trimmed_range().start()) != at
+    {
+        return None;
+    }
+    let block = close.parent().filter(is_block)?;
+    block
+        .first_token()
+        .map(|open| usize::from(open.text_trimmed_range().start()))
+}
+
+/// The innermost statement holding the last token that starts before
+/// `limit`, read up to `limit`.
+pub fn statement_before(ctx: &ParseCtx, limit: usize) -> Option<Statement> {
+    let offset = TextSize::from(u32::try_from(limit.checked_sub(1)?).ok()?);
+    if !ctx.syntax().text_range().contains(offset) {
+        return None;
+    }
+    let mut last = ctx.syntax().token_at_offset(offset).left_biased()?;
+    while usize::from(last.text_trimmed_range().start()) >= limit {
+        last = last.prev_token()?;
+    }
+    let node = last.ancestors().find(is_statement)?;
+    Some(statement(&node, limit))
 }
 
 #[cfg(test)]
