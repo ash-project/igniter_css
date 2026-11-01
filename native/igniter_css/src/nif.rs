@@ -169,6 +169,20 @@ pub struct ExAtRule {
     pub body: Option<String>,
 }
 
+impl From<analyze::AtRule> for ExAtRule {
+    fn from(a: analyze::AtRule) -> Self {
+        ExAtRule {
+            name: a.name,
+            prelude: a.prelude,
+            target: a.target,
+            has_block: a.has_block,
+            declarations: a.declarations,
+            text: a.text,
+            body: a.body,
+        }
+    }
+}
+
 #[derive(NifStruct, Debug, Clone)]
 #[module = "IgniterCss.Animation"]
 pub struct ExAnimation {
@@ -675,19 +689,32 @@ fn get_at_rules_nif(
     respond!(
         env,
         atoms::get_at_rules_nif(),
-        analyze::get_at_rules(&source, &name, matching.as_deref(), opts.into()).map(|list| {
-            list.into_iter()
-                .map(|a| ExAtRule {
-                    name: a.name,
-                    prelude: a.prelude,
-                    target: a.target,
-                    has_block: a.has_block,
-                    declarations: a.declarations,
-                    text: a.text,
-                    body: a.body,
-                })
-                .collect::<Vec<_>>()
-        })
+        analyze::get_at_rules(&source, &name, matching.as_deref(), opts.into())
+            .map(|list| list.into_iter().map(ExAtRule::from).collect::<Vec<_>>())
+    )
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn list_at_rules_nif(env: Env, source: String, opts: ExParseOpts) -> NifResult<Term> {
+    respond!(
+        env,
+        atoms::list_at_rules_nif(),
+        analyze::list_at_rules(&source, opts.into())
+            .map(|list| list.into_iter().map(ExAtRule::from).collect::<Vec<_>>())
+    )
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn remove_at_rules_nif(
+    env: Env,
+    source: String,
+    texts: Vec<String>,
+    opts: ExParseOpts,
+) -> NifResult<Term> {
+    respond!(
+        env,
+        atoms::remove_at_rules_nif(),
+        at_rule::remove_at_rules(&source, &texts, opts.into()).map(ExOutcome::from)
     )
 }
 

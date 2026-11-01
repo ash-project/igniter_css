@@ -49,6 +49,7 @@ defmodule IgniterCss.Native do
     do: error()
 
   def remove_at_rule_nif(_source, _name, _matching, _opts), do: error()
+  def remove_at_rules_nif(_source, _texts, _opts), do: error()
   def has_at_rule_nif(_source, _line, _opts), do: error()
   def add_import_nif(_source, _url, _media, _opts), do: error()
   def remove_import_nif(_source, _url, _opts), do: error()
@@ -90,6 +91,7 @@ defmodule IgniterCss.Native do
 
   def analyze_nif(_source, _opts), do: error()
   def get_at_rules_nif(_source, _name, _matching, _opts), do: error()
+  def list_at_rules_nif(_source, _opts), do: error()
   def validate_nif(_source, _opts), do: error()
   def validate_block_nif(_body, _opts), do: error()
   def extract_colors_nif(_source, _opts), do: error()

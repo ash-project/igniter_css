@@ -12,15 +12,15 @@ use crate::ctx::{ParseCtx, ParseOptions};
 use crate::edit::Edit;
 use crate::error::{CssError, Result};
 use crate::locate::{
-    at_rule_block_rule, declarations_in, find_at_rules_named, find_top_level_at_rules,
-    find_top_level_rules, non_declaration_items, normalize_property, top_level_nodes,
-    top_of_file_anchor, value_norm, AtRuleRef, DeclRef,
+    at_rule_block_rule, declarations_in, find_at_rules_named, find_every_at_rule,
+    find_top_level_at_rules, find_top_level_rules, non_declaration_items, normalize_property,
+    top_level_nodes, top_of_file_anchor, value_norm, AtRuleRef, DeclRef,
 };
 use crate::ops::rule::append_all_to_body;
 use crate::ops::{reindent, run, validate_snippet, Outcome};
 use crate::trivia::{absorb_surrounding_blank_line, comment_ranges, deletion_span};
 use biome_css_syntax::CssSyntaxKind;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// At-rules that must appear before any style rule, in this order.
 const PROLOGUE_FIRST: &[&str] = &["charset", "import", "use", "namespace"];
@@ -210,6 +210,38 @@ pub fn remove_at_rule(
             let span = deletion_span(ctx, &comments, at.start, at.end);
             let span = absorb_surrounding_blank_line(ctx, span);
             edits.push(Edit::delete(span.start, span.end));
+        }
+        Ok(edits)
+    })
+}
+
+/// Remove every at-rule, wherever it is, whose text is exactly one of `texts`
+/// -- the `text` of at-rules [`crate::analyze::list_at_rules`] returned, read
+/// with the same options, ones the parser could not place included. One inside
+/// another being removed goes with it, and comments it owns go as they do for
+/// [`remove_at_rule`]. Matched on the text rather than a position, so running
+/// it again on its own output finds nothing and changes nothing.
+pub fn remove_at_rules(source: &str, texts: &[String], options: ParseOptions) -> Result<Outcome> {
+    let texts: HashSet<&str> = texts.iter().map(String::as_str).collect();
+
+    run(source, options, |ctx| {
+        let comments = comment_ranges(ctx);
+        let mut edits: Vec<Edit> = Vec::new();
+        // In source order, so a span inside or touching the last one widens it
+        // rather than overlapping it.
+        for at in find_every_at_rule(ctx) {
+            if !texts.contains(&ctx.source()[at.start..at.end]) {
+                continue;
+            }
+            let span =
+                absorb_surrounding_blank_line(ctx, deletion_span(ctx, &comments, at.start, at.end));
+            match edits.last_mut() {
+                Some(last) if span.start <= last.end => {
+                    last.start = last.start.min(span.start);
+                    last.end = last.end.max(span.end);
+                }
+                _ => edits.push(Edit::delete(span.start, span.end)),
+            }
         }
         Ok(edits)
     })
@@ -1533,6 +1565,56 @@ mod tests {
                 "wrong target for {src}"
             );
         }
+    }
+
+    fn remove_listed(src: &str, names: &[&str]) -> Outcome {
+        let texts: Vec<String> = crate::analyze::list_at_rules(src, ParseOptions::strict())
+            .unwrap()
+            .into_iter()
+            .filter(|at| names.contains(&at.name.as_str()))
+            .map(|at| at.text)
+            .collect();
+        remove_at_rules(src, &texts, ParseOptions::strict()).unwrap()
+    }
+
+    #[test]
+    fn removes_listed_at_rules_wherever_they_are() {
+        let src = "@import \"a.css\";\n@media print {\n  @import \"b.css\";\n  .a { color: red; }\n}\n.b { &:hover { @source \"../c\"; } }\n@font-face { src: x; @import \"d.css\"; font-family: a; }\n.e { color: blue; }\n";
+        let out = remove_listed(src, &["import", "source"]);
+        assert_eq!(
+            out.source,
+            "@media print {\n  .a { color: red; }\n}\n.b { &:hover {  } }\n@font-face { src: x;  font-family: a; }\n.e { color: blue; }\n"
+        );
+        assert!(out.changed);
+        // Matched on the text, so a second run finds nothing to remove.
+        assert!(!remove_listed(&out.source, &["import", "source"]).changed);
+    }
+
+    #[test]
+    fn an_at_rule_inside_one_being_removed_goes_with_it() {
+        let src = "@plugin \"p\" { @import \"x\"; }\n.a { color: red; }\n";
+        assert_eq!(
+            remove_listed(src, &["plugin", "import"]).source,
+            ".a { color: red; }\n"
+        );
+    }
+
+    #[test]
+    fn removes_every_copy_of_a_listed_text_and_nothing_else() {
+        let src = "@import \"x\";\n.a { @import \"x\"; }\n@import \"y\";\n";
+        let texts = vec!["@import \"x\";".to_string()];
+        assert_eq!(
+            remove_at_rules(src, &texts, ParseOptions::strict())
+                .unwrap()
+                .source,
+            ".a {  }\n@import \"y\";\n"
+        );
+    }
+
+    #[test]
+    fn removing_at_rules_from_unbalanced_braces_is_refused() {
+        let texts = vec!["@import \"x\";".to_string()];
+        assert!(remove_at_rules(".a { @import \"x\";", &texts, ParseOptions::strict()).is_err());
     }
 
     #[test]

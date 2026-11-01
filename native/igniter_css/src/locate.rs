@@ -13,7 +13,7 @@
 //!     pick one, because guessing produces surprising diffs.
 
 use crate::ctx::{is_bogus, ParseCtx};
-use biome_css_syntax::{CssSyntaxKind, CssSyntaxNode};
+use biome_css_syntax::{CssSyntaxKind, CssSyntaxNode, CssSyntaxToken};
 use biome_rowan::{Direction, TextRange};
 
 // ---------------------------------------------------------------------------
@@ -72,6 +72,9 @@ pub struct AtRuleRef {
     /// Present only when `has_block`.
     pub body_open: Option<usize>,
     pub body_close: Option<usize>,
+    /// False for an `@` the parser could not place in an at-rule -- see
+    /// [`find_every_at_rule`]. Its `node` is then the one the `@` sits in.
+    pub placed: bool,
 }
 
 impl AtRuleRef {
@@ -466,6 +469,111 @@ fn at_rule_ref_from(node: &CssSyntaxNode, ctx: &ParseCtx) -> Option<AtRuleRef> {
         has_block,
         body_open,
         body_close,
+        placed: true,
+    })
+}
+
+/// The at-rule an `@` starts where the parser could not place one, read from
+/// the tokens that follow it: the name written against the `@`, then up to the
+/// `;` that ends it or the `}` that closes its block. A `}` closing the block
+/// the `@` sits in ends it first.
+///
+/// `None` for an `@` with no name against it, or one that does not start a
+/// statement -- first in the file or after a `;`, `{` or `}`, comments aside --
+/// because after anything else it is part of a selector or a value
+/// (`url(@x.png)`), as every reader of CSS takes it.
+fn stray_at_rule_ref(ctx: &ParseCtx, at: &CssSyntaxToken) -> Option<AtRuleRef> {
+    let starts_statement = at.prev_token().is_none_or(|token| {
+        matches!(
+            token.kind(),
+            CssSyntaxKind::SEMICOLON | CssSyntaxKind::L_CURLY | CssSyntaxKind::R_CURLY
+        )
+    });
+    if !starts_statement {
+        return None;
+    }
+    let (start, at_end) = range_to_pair(at.text_trimmed_range());
+    let name_token = at.next_token()?;
+    let (name_start, name_end) = range_to_pair(name_token.text_trimmed_range());
+    if name_start != at_end || name_token.kind() == CssSyntaxKind::EOF {
+        return None;
+    }
+
+    let mut end = name_end;
+    let mut depth = 0usize;
+    let mut prelude_end = None;
+    let mut body_open = None;
+    let mut body_close = None;
+    let mut target = None;
+    let mut prelude_norm = Vec::new();
+    let mut cursor = name_token.next_token();
+
+    while let Some(token) = cursor {
+        let (token_start, token_end) = range_to_pair(token.text_trimmed_range());
+        match token.kind() {
+            CssSyntaxKind::EOF => break,
+            CssSyntaxKind::SEMICOLON if depth == 0 => {
+                prelude_end.get_or_insert(token_start);
+                end = token_end;
+                break;
+            }
+            CssSyntaxKind::L_CURLY => {
+                if depth == 0 {
+                    prelude_end.get_or_insert(token_start);
+                    body_open = Some(token_end);
+                }
+                depth += 1;
+                end = token_end;
+            }
+            CssSyntaxKind::R_CURLY if depth == 0 => break,
+            CssSyntaxKind::R_CURLY => {
+                depth -= 1;
+                end = token_end;
+                if depth == 0 {
+                    body_close = Some(token_start);
+                    break;
+                }
+            }
+            kind => {
+                if prelude_end.is_none() {
+                    if target.is_none() {
+                        target = match kind {
+                            CssSyntaxKind::CSS_STRING_LITERAL => {
+                                Some(unquote(token.text_trimmed()))
+                            }
+                            CssSyntaxKind::CSS_URL_VALUE_RAW_LITERAL => {
+                                Some(token.text_trimmed().trim().to_string())
+                            }
+                            _ => None,
+                        };
+                    }
+                    prelude_norm.push(token.text_trimmed().to_string());
+                }
+                end = token_end;
+            }
+        }
+        cursor = token.next_token();
+    }
+
+    let prelude_end = prelude_end.unwrap_or(end);
+    Some(AtRuleRef {
+        node: at.parent()?,
+        name: name_token.text_trimmed().trim().to_lowercase(),
+        prelude: ctx
+            .source()
+            .get(name_end..prelude_end.max(name_end))
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        prelude_norm: prelude_norm.join(" "),
+        target,
+        start,
+        end,
+        has_block: body_open.is_some(),
+        body_open,
+        // An unclosed block runs to the end of the at-rule's text.
+        body_close: body_open.map(|_| body_close.unwrap_or(end)),
+        placed: false,
     })
 }
 
@@ -571,6 +679,24 @@ pub fn find_all_at_rules(ctx: &ParseCtx) -> Vec<AtRuleRef> {
     ctx.syntax()
         .descendants()
         .filter_map(|n| at_rule_ref_from(&n, ctx))
+        .collect()
+}
+
+/// Every at-rule in the file, in source order: each one [`find_all_at_rules`]
+/// finds, at any depth, and each `@` the parser could not place in an at-rule,
+/// such as an `@import` inside `@font-face` or a keyframe. Biome keeps those as
+/// bogus tokens, but a reader with a looser grammar -- Tailwind, for one -- still
+/// acts on them, so a caller deciding what a stylesheet may ask for has to see
+/// them too. An `@` inside a string, a comment or a `url()` is part of that
+/// token and starts nothing.
+pub fn find_every_at_rule(ctx: &ParseCtx) -> Vec<AtRuleRef> {
+    ctx.syntax()
+        .descendants_tokens(Direction::Next)
+        .filter(|token| token.kind() == CssSyntaxKind::AT)
+        .filter_map(|at| match at.parent() {
+            Some(node) if node.kind() == CssSyntaxKind::CSS_AT_RULE => at_rule_ref_from(&node, ctx),
+            _ => stray_at_rule_ref(ctx, &at),
+        })
         .collect()
 }
 

@@ -103,6 +103,7 @@ Callers get Igniter's normal diff preview and confirmation flow.
 | | |
 |---|---|
 | `ensure_at_rule/3`, `remove_at_rule/4` | `@import`, `@plugin`, `@source`, `@layer`, … |
+| `remove_at_rules/3` | at-rules `list_at_rules/2` found, at any depth |
 | `ensure_at_rule_block/5`, `ensure_at_rule_declarations/5`, `remove_at_rule_declarations/5` | at-rule blocks: a whole body, or only the declarations you own in a shared one such as `@theme` |
 | `add_import/4`, `remove_import/3` | `@import` convenience wrappers |
 | `ensure_rule/4`, `remove_rule/3` | whole rules |
@@ -112,7 +113,7 @@ Callers get Igniter's normal diff preview and confirmation flow.
 | `sort_properties/2`, `remove_duplicates/2` | tidying, by moving and deleting whole lines |
 
 **Queries** — read-only: `has_rule?/3`, `has_declaration?/4`, `has_at_rule?/3`,
-`get_declaration/4`, `get_rule_declarations/3`, `get_at_rules/4`,
+`get_declaration/4`, `get_rule_declarations/3`, `get_at_rules/4`, `list_at_rules/2`,
 `list_selectors/2`, `analyze/2`,
 `validate/2`, `validate_block/2`, `extract_colors/2`, `extract_media_queries/2`,
 `extract_animations/2`.

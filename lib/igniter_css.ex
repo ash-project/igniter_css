@@ -246,6 +246,53 @@ defmodule IgniterCss do
   end
 
   @doc """
+  Every at-rule in the file, as `IgniterCss.AtRule` structs in source order,
+  wherever it is: nested in `@media`, `@layer`, a rule or another at-rule's
+  block, and where the parser could not place one, such as an `@import` inside
+  `@font-face` or a keyframe. Biome keeps that one as bogus tokens, but a reader
+  with a looser grammar, Tailwind for one, still acts on it, so it is here too,
+  running from its `@` to the `;` or the block that ends it.
+
+  An `@` inside a string, a comment or a `url()` starts nothing. The name keeps
+  any escape as written (`@\\69mport` is named `\\69mport`).
+
+  For a caller that must know everything a stylesheet asks for, such as one
+  that keeps a build tool from reading files; the codemods stay top-level.
+
+      iex> css = ~s|@media print {\\n  @import "a.css";\\n}\\n@font-face { @plugin "p"; }\\n|
+      iex> {:ok, rules} = IgniterCss.list_at_rules(css)
+      iex> Enum.map(rules, &{&1.name, &1.target})
+      [{"media", nil}, {"import", "a.css"}, {"font-face", nil}, {"plugin", "p"}]
+  """
+  @spec list_at_rules(String.t(), opts()) ::
+          {:ok, [IgniterCss.AtRule.t()]} | {:error, String.t()}
+  def list_at_rules(source, opts \\ []) do
+    Native.list_at_rules_nif(source, ParseOpts.new(opts)) |> unwrap()
+  end
+
+  @doc """
+  Remove, wherever it is, every at-rule written exactly as one of `at_rules`:
+  at-rules `list_at_rules/2` returned for this `source`, read with the same
+  `opts`. One inside another being removed goes with it, and the comments a
+  removed at-rule owns go too, as with `remove_at_rule/4`.
+
+  Matched on the at-rule's text, so a second run on the output finds nothing
+  and reports `changed: false`.
+
+      iex> css = ~s|@media print {\\n  @import "a.css";\\n  .a { color: red; }\\n}\\n|
+      iex> {:ok, rules} = IgniterCss.list_at_rules(css)
+      iex> {:ok, out} = IgniterCss.remove_at_rules(css, Enum.filter(rules, &(&1.name == "import")))
+      iex> out.source
+      ~s|@media print {\\n  .a { color: red; }\\n}\\n|
+  """
+  @spec remove_at_rules(String.t(), [IgniterCss.AtRule.t()], opts()) :: result()
+  def remove_at_rules(source, at_rules, opts \\ []) when is_list(at_rules) do
+    source
+    |> Native.remove_at_rules_nif(Enum.map(at_rules, & &1.text), ParseOpts.new(opts))
+    |> unwrap()
+  end
+
+  @doc """
   Add an `@import`, building the line for you.
 
   Absolute URLs are wrapped in `url(...)`; relative paths are quoted.

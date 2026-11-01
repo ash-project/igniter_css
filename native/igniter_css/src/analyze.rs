@@ -10,8 +10,9 @@ use crate::ctx::{ParseCtx, ParseError, ParseOptions};
 use crate::error::Result;
 use crate::locate::{
     all_comments, at_rule_body, closing_brace, declaration_lists, declarations_in_block,
-    find_all_at_rules, find_all_rules, find_at_rules_named, find_top_level_rules,
-    in_free_form_value, is_stray_semicolon, misplaced_at_rules, DeclRef,
+    find_all_at_rules, find_all_rules, find_at_rules_named, find_every_at_rule,
+    find_top_level_rules, in_free_form_value, is_stray_semicolon, misplaced_at_rules, AtRuleRef,
+    DeclRef,
 };
 use crate::ops::at_rule::normalize_target_needle;
 use crate::ops::query;
@@ -479,6 +480,29 @@ pub struct AtRule {
     pub body: Option<String>,
 }
 
+fn read_at_rule(ctx: &ParseCtx, at: &AtRuleRef) -> AtRule {
+    AtRule {
+        name: at.name.clone(),
+        prelude: at.prelude.clone(),
+        target: at.target.clone(),
+        has_block: at.has_block,
+        declarations: at_rule_body(at)
+            .filter(|_| at.placed)
+            .map(|block| {
+                declarations_in_block(ctx, &block)
+                    .iter()
+                    .map(|d| (d.property.clone(), d.value_raw.trim().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        text: ctx.source()[at.start..at.end].to_string(),
+        body: match (at.body_open, at.body_close) {
+            (Some(open), Some(close)) => Some(ctx.source()[open..close].to_string()),
+            _ => None,
+        },
+    }
+}
+
 /// Every **top-level** at-rule named `name`, optionally narrowed to those
 /// `matching` names -- see [`crate::locate::AtRuleRef::matches`].
 ///
@@ -498,25 +522,22 @@ pub fn get_at_rules(
         Ok(find_at_rules_named(ctx, &wanted)
             .iter()
             .filter(|at| at.matches(want.as_deref()))
-            .map(|at| AtRule {
-                name: at.name.clone(),
-                prelude: at.prelude.clone(),
-                target: at.target.clone(),
-                has_block: at.has_block,
-                declarations: at_rule_body(at)
-                    .map(|block| {
-                        declarations_in_block(ctx, &block)
-                            .iter()
-                            .map(|d| (d.property.clone(), d.value_raw.trim().to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                text: ctx.source()[at.start..at.end].to_string(),
-                body: match (at.body_open, at.body_close) {
-                    (Some(open), Some(close)) => Some(ctx.source()[open..close].to_string()),
-                    _ => None,
-                },
-            })
+            .map(|at| read_at_rule(ctx, at))
+            .collect())
+    })
+}
+
+/// Every at-rule in the file, in source order, wherever it is: nested in
+/// `@media`, `@layer`, a rule or another at-rule's block, or where the parser
+/// could not place one -- see [`crate::locate::find_every_at_rule`].
+///
+/// For a caller that has to know everything a stylesheet asks for, such as one
+/// that keeps a build tool from reading files, rather than for a codemod.
+pub fn list_at_rules(source: &str, options: ParseOptions) -> Result<Vec<AtRule>> {
+    query(source, options, |ctx| {
+        Ok(find_every_at_rule(ctx)
+            .iter()
+            .map(|at| read_at_rule(ctx, at))
             .collect())
     })
 }
@@ -931,6 +952,68 @@ mod tests {
         assert!(found[0]
             .text
             .contains("/* keeps daisyUI off our own .btn */"));
+    }
+
+    fn listed(src: &str) -> Vec<(String, Option<String>)> {
+        list_at_rules(src, ParseOptions::strict())
+            .unwrap()
+            .into_iter()
+            .map(|at| (at.name, at.target))
+            .collect()
+    }
+
+    fn named(name: &str, target: &str) -> (String, Option<String>) {
+        (name.to_string(), Some(target.to_string()))
+    }
+
+    #[test]
+    fn lists_every_at_rule_at_any_depth_in_source_order() {
+        let src = "@import \"a.css\";\n@media print {\n  @import \"b.css\";\n  .a { &:hover { @source \"../c\"; } }\n}\n@layer base { @plugin \"d\"; }\n";
+        assert_eq!(
+            listed(src),
+            vec![
+                named("import", "a.css"),
+                ("media".to_string(), None),
+                named("import", "b.css"),
+                named("source", "../c"),
+                ("layer".to_string(), None),
+                named("plugin", "d"),
+            ]
+        );
+    }
+
+    #[test]
+    fn lists_an_at_rule_the_parser_could_not_place() {
+        // CSS has no at-rule inside `@font-face` or a keyframe, so Biome keeps
+        // these as bogus tokens. Tailwind still imports the file.
+        let found = list_at_rules(
+            "@font-face { src: x; @import \"../x.css\"; font-family: a; }",
+            ParseOptions::strict(),
+        )
+        .unwrap();
+        assert_eq!(found[1].name, "import");
+        assert_eq!(found[1].target.as_deref(), Some("../x.css"));
+        assert_eq!(found[1].text, "@import \"../x.css\";");
+        assert!(found[1].declarations.is_empty());
+
+        assert_eq!(
+            listed("@keyframes k { from { @plugin \"p\" { a: b } color: red } }"),
+            vec![("keyframes".to_string(), None), named("plugin", "p")]
+        );
+    }
+
+    #[test]
+    fn an_at_sign_in_a_string_a_comment_or_a_value_starts_nothing() {
+        let src =
+            "/* @import \"a\"; */ .a { content: \"@import 'b';\"; background: url(@import.png); }";
+        assert!(listed(src).is_empty());
+        assert!(listed(".a { b: c @import \"x\"; }").is_empty());
+    }
+
+    #[test]
+    fn a_listed_name_keeps_its_case_folded_and_its_escape_as_written() {
+        assert_eq!(listed("@IMPORT \"a\";"), vec![named("import", "a")]);
+        assert_eq!(listed("@\\69mport \"a\";"), vec![named("\\69mport", "a")]);
     }
 
     #[test]
