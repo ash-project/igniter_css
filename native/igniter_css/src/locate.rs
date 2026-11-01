@@ -1095,6 +1095,49 @@ pub fn is_stray_semicolon(ctx: &ParseCtx, start: usize, end: usize) -> bool {
             .all(|t| t.kind() == CssSyntaxKind::SEMICOLON)
 }
 
+/// Byte offset of the first `}` Biome read into an at-rule's prelude where CSS
+/// Syntax ends the at-rule with it: one written last in a block, with no block
+/// of its own and no `;`, such as `.a { @apply p-4 }`. That `}` closes the
+/// block the at-rule is in; Biome 0.5.8 reads on to the next `;` or `{`, and
+/// misreads everything up to there.
+///
+/// Only for a prelude on one line with its brackets closed and no `:` with a
+/// space after it. One that runs onto a new line before the `}`, `@apply p-4`
+/// then `color: red`, or holds a `:` the way a declaration does, `@apply p-4
+/// gap: 1px`, holds what reads as another statement with its `;` missing, and
+/// stays an error. A class name such as `md:p-4` has no space after its `:`.
+pub fn at_rule_ended_by_its_block(ctx: &ParseCtx) -> Option<usize> {
+    let prelude = ctx
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == CssSyntaxKind::CSS_UNKNOWN_AT_RULE_COMPONENT_LIST)
+        .find(|n| {
+            n.children_with_tokens()
+                .any(|e| e.kind() == CssSyntaxKind::R_CURLY)
+        })?;
+    prelude
+        .parent()?
+        .parent()
+        .filter(|n| n.kind() == CssSyntaxKind::CSS_AT_RULE && is_statement(n))?;
+    let tokens: Vec<_> = prelude.descendants_tokens(Direction::Next).collect();
+    let close = tokens
+        .iter()
+        .position(|t| t.kind() == CssSyntaxKind::R_CURLY)?;
+    let before = &tokens[..close];
+    let one_line = !before.is_empty() && !before.iter().any(|t| t.has_leading_newline());
+    let declaration = before.iter().any(|t| {
+        t.kind() == CssSyntaxKind::COLON
+            && t.trailing_trivia()
+                .pieces()
+                .any(|piece| piece.is_whitespace())
+    });
+    (one_line
+        && !declaration
+        && brackets_close(before)
+        && tokens[close].parent().as_ref() == Some(&prelude))
+    .then(|| usize::from(tokens[close].text_trimmed_range().start()))
+}
+
 /// At-rules that are valid only at the top level of a stylesheet, written
 /// inside a block instead, as `(name, start, end)`.
 ///

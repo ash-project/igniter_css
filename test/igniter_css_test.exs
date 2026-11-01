@@ -693,6 +693,21 @@ defmodule IgniterCssTest do
       end
     end
 
+    test "accepts an at-rule with no `;` written last in a block" do
+      for body <- ["@apply p-4", "padding: 4px;\n@apply p-4", "&:hover { @apply p-4 }"] do
+        assert {:ok, %{valid: true, errors: []}} = IgniterCss.validate_block(body), body
+      end
+
+      assert {:ok, %{valid: true}} = IgniterCss.validate(".a { @apply p-4 }\n.b { color: red; }")
+    end
+
+    test "still refuses an @apply that runs into another statement without a `;`" do
+      assert {:error, %{errors: [%{line: 1, column: 1, text: "@apply p-4\ncolor: red"}]}} =
+               IgniterCss.validate_block("@apply p-4\ncolor: red")
+
+      assert {:error, _} = IgniterCss.validate_block("@apply p-4 gap: 1px")
+    end
+
     test "places a block left open where its } is missing" do
       assert {:error, %{errors: [error]}} = IgniterCss.validate_block("&:hover { gap: 1px;")
 

@@ -114,7 +114,8 @@ defmodule IgniterCss.Validation do
 
   `errors` is the verdict, each placed by line and column: the parser's errors
   less the ones it raises against valid CSS, such as a `:` in a custom
-  property's value. `diagnostics` counts what the parser raised before that.
+  property's value or an `@apply` with no `;` written last in a block.
+  `diagnostics` counts what the parser raised before that.
   """
 
   @type t :: %__MODULE__{
