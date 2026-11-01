@@ -1195,6 +1195,9 @@ pub struct Statement {
     /// End of its last token before the limit it was read to. A rule ends
     /// before the first `;` in its selector, where the author ended it.
     pub end: usize,
+    /// Start of the first token in it before the limit that the lexer could
+    /// not read, such as a string with no closing quote.
+    pub unread: Option<usize>,
 }
 
 /// Is `node` an item of a block: something written between a `{` and its `}`?
@@ -1253,7 +1256,17 @@ fn statement(node: &CssSyntaxNode, limit: usize) -> Statement {
         .filter(|t| t.kind() != CssSyntaxKind::CSS_SPACE_LITERAL)
         .last()
         .map_or(start, |t| usize::from(t.text_trimmed_range().end()));
-    Statement { kind, start, end }
+    let unread = node
+        .descendants_tokens(Direction::Next)
+        .take_while(|t| usize::from(t.text_trimmed_range().start()) < limit)
+        .find(|t| t.kind() == CssSyntaxKind::ERROR_TOKEN)
+        .map(|t| usize::from(t.text_trimmed_range().start()));
+    Statement {
+        kind,
+        start,
+        end,
+        unread,
+    }
 }
 
 /// Nested rules whose selector cannot be one: it holds a `;`, or no `{`
@@ -1261,18 +1274,31 @@ fn statement(node: &CssSyntaxNode, limit: usize) -> Statement {
 /// `color crimson;`, together with everything after it up to the next `{`, or
 /// to the end of the text when there is none. Each comes with the offset
 /// where that reading stops, and is read as written up to `limit`.
+///
+/// A token the lexer could not read, such as a string with no closing quote,
+/// is what Biome misread the rest from: a rule with one in what the author
+/// wrote is not listed, and one after its `;` stops the reading there.
 pub fn misread_rules(ctx: &ParseCtx, limit: usize) -> Vec<(Statement, usize)> {
     ctx.syntax()
         .descendants()
         .filter(|n| n.kind() == CssSyntaxKind::CSS_NESTED_QUALIFIED_RULE)
         .filter_map(|rule| {
-            let reach = block_child(&rule).map(|block| trimmed(&block).0);
+            let block = block_child(&rule).map(|block| trimmed(&block).0);
             let semicolon = rule
                 .first_child()?
                 .descendants_tokens(Direction::Next)
                 .any(|t| t.kind() == CssSyntaxKind::SEMICOLON);
-            (semicolon || reach.is_none())
-                .then(|| (statement(&rule, limit), reach.unwrap_or(usize::MAX)))
+            if !semicolon && block.is_some() {
+                return None;
+            }
+            let read = statement(&rule, limit);
+            if read.unread.is_some_and(|at| at < read.end) {
+                return None;
+            }
+            let reach = block
+                .unwrap_or(usize::MAX)
+                .min(read.unread.unwrap_or(usize::MAX));
+            Some((read, reach))
         })
         .collect()
 }

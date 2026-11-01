@@ -567,7 +567,10 @@ defmodule IgniterCss do
   No error points past the body or names the block it is put in. A body that
   ends in the middle of a statement has one error on that statement, and one
   that leaves a block open has one where its `}` is missing. A declaration
-  with no `:`, which the parser reads as a nested rule, is named as one.
+  with no `:`, which the parser reads as a nested rule, is named as one. A
+  string with no closing quote keeps the parser's own error, whatever it
+  misreads after it. A message quotes the author's text on one line, a line
+  break in it written `\\n`.
 
   Returns `{:ok, %IgniterCss.Validation{}}` or `{:error, %IgniterCss.Validation{}}`.
 

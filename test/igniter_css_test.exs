@@ -708,6 +708,30 @@ defmodule IgniterCssTest do
       assert {:error, _} = IgniterCss.validate_block("@apply p-4 gap: 1px")
     end
 
+    test "keeps a string's missing closing quote over what the parser misreads after it" do
+      assert {:error, %{errors: [error | _]}} =
+               IgniterCss.validate_block(~s|&[data-x="a\nb"] { gap: 1px; }|)
+
+      assert %IgniterCss.Diagnostic{
+               line: 1,
+               column: 10,
+               text: ~s|"a|,
+               message: "Missing closing quote"
+             } = error
+    end
+
+    test "quotes the author's text in its own messages on one line" do
+      assert {:error, %{errors: [error], message: message}} =
+               IgniterCss.validate_block("&:hover\n.b")
+
+      assert %IgniterCss.Diagnostic{
+               text: "&:hover\n.b",
+               message: "Expected a `{` after the selector `&:hover\\n.b`"
+             } = error
+
+      refute message =~ "\n"
+    end
+
     test "places a block left open where its } is missing" do
       assert {:error, %{errors: [error]}} = IgniterCss.validate_block("&:hover { gap: 1px;")
 

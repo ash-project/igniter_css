@@ -710,7 +710,7 @@ impl Validation {
                     errors.len(),
                     first.line,
                     first.column,
-                    first.message
+                    one_line(&first.message)
                 ),
             }
         };
@@ -853,6 +853,12 @@ fn line_and_column(text: &str, at: usize) -> (usize, usize) {
     )
 }
 
+/// `message` on one line: a line break in the author's text it quotes reads
+/// `\r` or `\n`, as it does in an inspected string.
+fn one_line(message: &str) -> String {
+    message.replace('\r', "\\r").replace('\n', "\\n")
+}
+
 /// The one error for a statement left unfinished, saying what it lacks.
 fn unfinished(source: &str, statement: &Statement) -> ParseError {
     let message = match &statement.kind {
@@ -868,7 +874,7 @@ fn unfinished(source: &str, statement: &Statement) -> ParseError {
         StatementKind::Other => "This statement is not finished".to_string(),
     };
     ParseError {
-        message,
+        message: one_line(&message),
         start: statement.start,
         end: statement.end,
     }
@@ -929,6 +935,9 @@ const BLOCK_CLOSE: &str = "\n}\n";
 /// a block it opens and leaves open is one error at its end, a statement it
 /// leaves unfinished one error on that statement, and they go when an error
 /// in the body already runs past its end or a `}` closes the block early.
+/// A token the lexer could not read, such as a string with no closing quote,
+/// keeps its own error: what Biome misreads after it is not put down to a
+/// missing `:`, `{` or end. A message quotes the author's text on one line.
 pub fn validate_block(body: &str, options: ParseOptions) -> Validation {
     if let Err(e) = crate::ctx::check_nesting(body) {
         return Validation::refused(e.to_string());
@@ -984,8 +993,17 @@ pub fn validate_block(body: &str, options: ParseOptions) -> Validation {
         } else if let Some(statement) =
             statement_before(ctx, body_end).filter(|s| s.start >= body_start)
         {
-            found.retain(|e| e.start < statement.start);
-            found.push(unfinished(ctx.source(), &statement));
+            // A token in it the lexer could not read explains the rest, while
+            // its own error is still there to say so.
+            let unread = statement
+                .unread
+                .is_some_and(|at| found.iter().any(|e| e.start >= at && e.start < body_end));
+            if unread {
+                found.retain(|e| e.start < body_end);
+            } else {
+                found.retain(|e| e.start < statement.start);
+                found.push(unfinished(ctx.source(), &statement));
+            }
         }
     }
     found.sort_by_key(|e| (e.start, e.end));
@@ -1606,6 +1624,73 @@ mod tests {
         let (_, _, _, message) = only_error("/* never closed\ngap: 1px;");
         assert_eq!(message, "Unterminated block comment");
         assert_eq!(only_error("background: url(x").2, "x");
+    }
+
+    // The lexer ends a string with no closing quote at the line's end; Biome
+    // then reads the rest of the selector, its block included, as one rule
+    // with no `{`.
+    #[test]
+    fn a_string_left_open_keeps_its_own_error() {
+        let quote = "Missing closing quote";
+        for (body, at, text) in [
+            ("&[data-x=\"a\nb\"] { gap: 1px; }", (1, 10), "\"a"),
+            ("&[data-x='a\nb'] { gap: 1px; }", (1, 10), "'a"),
+            ("&[x=\"a\nb\"] {\n  gap: 1px;\n}", (1, 5), "\"a"),
+            ("@media (x: \"a", (1, 12), "\"a"),
+            ("--x: [\"abc", (1, 7), "\"abc"),
+        ] {
+            let v = validate_block(body, opts());
+            assert!(!v.valid, "{body:?}");
+            let e = &v.errors[0];
+            assert_eq!(
+                (e.line, e.column, e.text.as_str(), e.message.as_str()),
+                (at.0, at.1, text, quote),
+                "{body:?}: {:?}",
+                v.errors
+            );
+            assert!(
+                v.errors.iter().all(|e| e.message == quote),
+                "{body:?}: {:?}",
+                v.errors
+            );
+        }
+
+        let v = validate_block("color crimson;\n&[data-x=\"a\nb\"] { gap: 1px; }", opts());
+        let found: Vec<_> = v
+            .errors
+            .iter()
+            .map(|e| (e.line, e.column, e.message.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (1, 1, "Expected a `:` after the property name `color`"),
+                (2, 10, quote),
+                (3, 2, quote)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_message_quotes_the_authors_text_on_one_line() {
+        assert_eq!(
+            only_error("&:hover\n.b"),
+            row(
+                1,
+                1,
+                "&:hover\n.b",
+                "Expected a `{` after the selector `&:hover\\n.b`"
+            )
+        );
+        assert_eq!(
+            only_error("gap: 1px;\r\n&:hover\r\n.b").3,
+            "Expected a `{` after the selector `&:hover\\r\\n.b`"
+        );
+
+        // Biome quotes what it found, a string's escaped line break included.
+        let v = validate_block("\"a\\\nb\" { gap: 1px; }", opts());
+        assert!(v.errors[0].message.contains('\n'), "{:?}", v.errors);
+        assert!(!v.message.contains('\n'), "{}", v.message);
     }
 
     // CSS Syntax ends an at-rule with no block at the `}` of the block it is
