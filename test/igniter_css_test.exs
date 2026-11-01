@@ -668,10 +668,40 @@ defmodule IgniterCssTest do
     end
 
     test "places an error in the body, not in the rule it is read inside" do
-      assert {:error, %{errors: [error | _rest]}} =
+      assert {:error, %{errors: [error]}} =
                IgniterCss.validate_block("gap: 1px;\ncolor crimson")
 
-      assert %IgniterCss.Diagnostic{line: 2, column: 14} = error
+      assert %IgniterCss.Diagnostic{line: 2, column: 1, offset: 10, text: "color crimson"} =
+               error
+    end
+
+    test "names a declaration with no `:`, however it ends" do
+      for {body, line} <- [
+            {"color crimson", 1},
+            {"color crimson;", 1},
+            {"gap: 1px;\ncolor crimson", 2},
+            {"gap: 1px;\ncolor crimson;\nmargin: 0;", 2}
+          ] do
+        assert {:error, %{errors: [error]}} = IgniterCss.validate_block(body), body
+
+        assert %IgniterCss.Diagnostic{
+                 line: ^line,
+                 column: 1,
+                 text: "color crimson",
+                 message: "Expected a `:` after the property name `color`"
+               } = error
+      end
+    end
+
+    test "places a block left open where its } is missing" do
+      assert {:error, %{errors: [error]}} = IgniterCss.validate_block("&:hover { gap: 1px;")
+
+      assert %IgniterCss.Diagnostic{
+               line: 1,
+               column: 20,
+               text: "",
+               message: "Expected a `}` to close the `{` on line 1, column 9"
+             } = error
     end
 
     test "refuses a } that closes the block early, even when the rest parses" do

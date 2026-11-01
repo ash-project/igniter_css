@@ -11,8 +11,8 @@ use crate::error::Result;
 use crate::locate::{
     all_comments, at_rule_body, closing_brace, declaration_lists, declarations_in_block,
     find_all_at_rules, find_all_rules, find_at_rules_named, find_every_at_rule,
-    find_top_level_rules, in_free_form_value, is_stray_semicolon, misplaced_at_rules, AtRuleRef,
-    DeclRef,
+    find_top_level_rules, in_free_form_value, is_stray_semicolon, misplaced_at_rules,
+    misread_rules, opening_brace, statement_before, AtRuleRef, DeclRef, Statement, StatementKind,
 };
 use crate::ops::at_rule::normalize_target_needle;
 use crate::ops::query;
@@ -759,14 +759,44 @@ fn placed(text: &str, shift: usize, error: &ParseError) -> Diagnostic {
     };
     let start = clamp(error.start);
     let end = clamp(error.end).max(start);
-    let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
+    let (line, column) = line_and_column(text, start);
 
     Diagnostic {
         message: error.message.clone(),
-        line: text[..start].matches('\n').count() + 1,
-        column: text[line_start..start].chars().count() + 1,
+        line,
+        column,
         offset: start,
         text: text[start..end].to_string(),
+    }
+}
+
+/// 1-based line and column of byte `at` in `text`, the column in characters.
+fn line_and_column(text: &str, at: usize) -> (usize, usize) {
+    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    (
+        text[..at].matches('\n').count() + 1,
+        text[line_start..at].chars().count() + 1,
+    )
+}
+
+/// The one error for a statement left unfinished, saying what it lacks.
+fn unfinished(source: &str, statement: &Statement) -> ParseError {
+    let message = match &statement.kind {
+        StatementKind::Rule {
+            property: Some(name),
+        } => format!("Expected a `:` after the property name `{name}`"),
+        StatementKind::Rule { property: None } => format!(
+            "Expected a `{{` after the selector `{}`",
+            &source[statement.start..statement.end]
+        ),
+        StatementKind::AtRule(name) => format!("This `@{name}` rule is not finished"),
+        StatementKind::Declaration => "This declaration is not finished".to_string(),
+        StatementKind::Other => "This statement is not finished".to_string(),
+    };
+    ParseError {
+        message,
+        start: statement.start,
+        end: statement.end,
     }
 }
 
@@ -819,6 +849,14 @@ const BLOCK_CLOSE: &str = "\n}\n";
 /// `body` that closes the block it was put in is an error: everything after it
 /// would be outside that block, at the top level of whatever stylesheet the
 /// body is written into, and still parse.
+///
+/// No error points into or names the block the body is put in. A declaration
+/// with no `:`, which Biome reads as a rule and raises selector errors
+/// against, is one error on what the author wrote. The errors Biome raises
+/// past the body's end come from the body ending in the middle of something:
+/// a block it opens and leaves open is one error at its end, a statement it
+/// leaves unfinished one error on that statement, and they go when an error
+/// in the body already runs past its end or a `}` closes the block early.
 pub fn validate_block(body: &str, options: ParseOptions) -> Validation {
     if let Err(e) = crate::ctx::check_nesting(body) {
         return Validation::refused(e.to_string());
@@ -830,25 +868,53 @@ pub fn validate_block(body: &str, options: ParseOptions) -> Validation {
     };
 
     let mut found = errors(&ctx);
-    let body_end = BLOCK_OPEN.len() + body.len();
+    let body_start = BLOCK_OPEN.len();
+    let body_end = body_start + body.len();
     let closed_early = find_top_level_rules(&ctx)
         .first()
         .and_then(closing_brace)
         .filter(|&at| at < body_end);
     if let Some(at) = closed_early {
         found.push(ParseError {
-            message: "this `}` closes the block it is written in; everything after it is outside"
+            message: "This `}` closes the block it is written in; everything after it is outside"
                 .to_string(),
             start: at,
             end: at + 1,
         });
-        found.sort_by_key(|e| (e.start, e.end));
     }
 
-    let errors = found
-        .iter()
-        .map(|e| placed(body, BLOCK_OPEN.len(), e))
-        .collect();
+    for (rule, reach) in misread_rules(&ctx, body_end) {
+        found.retain(|e| e.start < rule.start || e.start >= reach);
+        found.push(unfinished(&source, &rule));
+    }
+
+    if found.iter().any(|e| e.start >= body_end) {
+        let explained =
+            closed_early.is_some() || found.iter().any(|e| e.start < body_end && e.end > body_end);
+        if explained {
+            found.retain(|e| e.start < body_end);
+        } else if let Some(open) =
+            opening_brace(&ctx, body_end + 1).filter(|&open| open >= body_start)
+        {
+            let (line, column) = line_and_column(body, open - body_start);
+            found.retain(|e| e.start < body_end);
+            found.push(ParseError {
+                message: format!(
+                    "Expected a `}}` to close the `{{` on line {line}, column {column}"
+                ),
+                start: body_end,
+                end: body_end,
+            });
+        } else if let Some(statement) =
+            statement_before(&ctx, body_end).filter(|s| s.start >= body_start)
+        {
+            found.retain(|e| e.start < statement.start);
+            found.push(unfinished(&source, &statement));
+        }
+    }
+    found.sort_by_key(|e| (e.start, e.end));
+
+    let errors = found.iter().map(|e| placed(body, body_start, e)).collect();
     Validation::of(&ctx, errors)
 }
 
@@ -1347,6 +1413,120 @@ mod tests {
         assert!(!v.valid);
         let last = v.errors.last().unwrap();
         assert_eq!((last.line, last.column, last.text.as_str()), (1, 20, ""));
+    }
+
+    fn only_error(body: &str) -> (usize, usize, String, String) {
+        let v = validate_block(body, opts());
+        assert!(!v.valid, "{body:?}");
+        assert_eq!(v.errors.len(), 1, "{body:?}: {:?}", v.errors);
+        let e = &v.errors[0];
+        (e.line, e.column, e.text.clone(), e.message.clone())
+    }
+
+    fn row(
+        line: usize,
+        column: usize,
+        text: &str,
+        message: &str,
+    ) -> (usize, usize, String, String) {
+        (line, column, text.to_string(), message.to_string())
+    }
+
+    // Biome reads `color crimson` as a nested rule, the block's own `}` and
+    // everything after it up to a `{` included, and raises selector errors
+    // there and past the body's end.
+    #[test]
+    fn a_declaration_with_no_colon_is_one_error_on_what_was_written() {
+        let missing = "Expected a `:` after the property name `color`";
+        for (body, at) in [
+            ("color crimson", (1, 1)),
+            ("color crimson;", (1, 1)),
+            ("color crimson /* c */ ", (1, 1)),
+            ("gap: 1px;\ncolor crimson", (2, 1)),
+            ("gap: 1px;\ncolor crimson;\nmargin: 0;", (2, 1)),
+            ("gap: 1px;\r\n  color crimson", (2, 3)),
+            ("color crimson; &:hover { gap: 1px }", (1, 1)),
+            ("&:hover { color crimson; }", (1, 11)),
+        ] {
+            assert_eq!(
+                only_error(body),
+                row(at.0, at.1, "color crimson", missing),
+                "{body:?}"
+            );
+        }
+        assert_eq!(
+            only_error("width 10px !important"),
+            row(
+                1,
+                1,
+                "width 10px !important",
+                "Expected a `:` after the property name `width`"
+            )
+        );
+    }
+
+    #[test]
+    fn an_unfinished_statement_is_one_error_on_what_was_written() {
+        for (body, expected) in [
+            (
+                "gap: 1px;\n&:hover",
+                row(
+                    2,
+                    1,
+                    "&:hover",
+                    "Expected a `{` after the selector `&:hover`",
+                ),
+            ),
+            (
+                "div > span",
+                row(
+                    1,
+                    1,
+                    "div > span",
+                    "Expected a `{` after the selector `div > span`",
+                ),
+            ),
+            (
+                "@media (min-width: 1px)",
+                row(
+                    1,
+                    1,
+                    "@media (min-width: 1px)",
+                    "This `@media` rule is not finished",
+                ),
+            ),
+            (
+                "gap: 1px;\ncolor: var(--x",
+                row(2, 1, "color: var(--x", "This declaration is not finished"),
+            ),
+        ] {
+            assert_eq!(only_error(body), expected, "{body:?}");
+        }
+    }
+
+    #[test]
+    fn a_block_left_open_is_one_error_naming_its_brace() {
+        for (body, at, message) in [
+            (
+                "&:hover { gap: 1px;",
+                (1, 20),
+                "Expected a `}` to close the `{` on line 1, column 9",
+            ),
+            (
+                "gap: 1px;\n&:hover {\n  &:focus { gap: 1px; }",
+                (3, 24),
+                "Expected a `}` to close the `{` on line 2, column 9",
+            ),
+        ] {
+            assert_eq!(only_error(body), row(at.0, at.1, "", message), "{body:?}");
+        }
+    }
+
+    #[test]
+    fn an_error_running_past_the_end_explains_the_rest() {
+        let (_, _, _, message) = only_error("/* never closed\ngap: 1px;");
+        assert_eq!(message, "Unterminated block comment");
+        assert_eq!(only_error("background: url(x").2, "x");
     }
 
     #[test]

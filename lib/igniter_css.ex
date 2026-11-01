@@ -564,6 +564,11 @@ defmodule IgniterCss do
   written in is an error, though what follows it may parse: in a stylesheet,
   everything after it would be outside the block.
 
+  No error points past the body or names the block it is put in. A body that
+  ends in the middle of a statement has one error on that statement, and one
+  that leaves a block open has one where its `}` is missing. A declaration
+  with no `:`, which the parser reads as a nested rule, is named as one.
+
   Returns `{:ok, %IgniterCss.Validation{}}` or `{:error, %IgniterCss.Validation{}}`.
 
       iex> {:ok, v} = IgniterCss.validate_block("padding: 4px;\\n&:hover { color: red; }")
@@ -574,6 +579,11 @@ defmodule IgniterCss do
       iex> [%IgniterCss.Diagnostic{line: 2, column: 22, text: ": blue"}] = v.errors
       iex> v.valid
       false
+
+      iex> {:error, v} = IgniterCss.validate_block("gap: 1px;\\ncolor crimson")
+      iex> [%IgniterCss.Diagnostic{line: 2, column: 1, text: "color crimson", message: message}] = v.errors
+      iex> message
+      "Expected a `:` after the property name `color`"
 
       iex> {:error, v} = IgniterCss.validate_block("gap: 1px; } body { display: none; ")
       iex> [%IgniterCss.Diagnostic{line: 1, column: 11, text: "}"}] = v.errors
