@@ -691,6 +691,25 @@ defmodule IgniterCssTest do
                  message: "Expected a `:` after the property name `color`"
                } = error
       end
+
+      assert {:error, %{errors: [%{line: 1, column: 11, text: "color crimson"}]}} =
+               IgniterCss.validate_block("&:hover { color crimson }")
+    end
+
+    test "refuses a string left open in a custom property, which takes a `:`" do
+      assert {:error, %{errors: [error]}} = IgniterCss.validate_block(~s|--x: "abc|)
+
+      assert %IgniterCss.Diagnostic{
+               line: 1,
+               column: 6,
+               text: ~s|"abc|,
+               message: "Missing closing quote"
+             } = error
+
+      assert {:error, %{errors: [%{column: 11, message: "Missing closing quote"}]}} =
+               IgniterCss.validate(~s|.a { --x: "abc\n}|)
+
+      assert {:ok, _} = IgniterCss.validate_block("--x: a:b;")
     end
 
     test "accepts an at-rule with no `;` written last in a block" do

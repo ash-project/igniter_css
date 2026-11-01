@@ -997,6 +997,27 @@ fn covering_node(ctx: &ParseCtx, start: usize, end: usize) -> Option<CssSyntaxNo
     }
 }
 
+/// Is `start..end` a string the lexer could not end, `"abc` with its line or
+/// the text ending before the closing quote? CSS Syntax reads it as a bad
+/// string, which ends the declaration it is in as invalid.
+fn is_open_string(ctx: &ParseCtx, start: usize, end: usize) -> bool {
+    let (Ok(start), Ok(end)) = (u32::try_from(start), u32::try_from(end)) else {
+        return false;
+    };
+    let range = TextRange::new(start.into(), end.into());
+    if !ctx.syntax().text_range().contains_range(range) {
+        return false;
+    }
+    match ctx.syntax().covering_element(range) {
+        biome_rowan::SyntaxElement::Token(token) => {
+            token.kind() == CssSyntaxKind::ERROR_TOKEN
+                && token.text_trimmed_range() == range
+                && token.text_trimmed().starts_with(['"', '\''])
+        }
+        biome_rowan::SyntaxElement::Node(_) => false,
+    }
+}
+
 /// Is `start..end` inside a declaration value whose grammar is any run of
 /// tokens, where Biome 0.5.8 raises an error the specification does not?
 ///
@@ -1011,7 +1032,12 @@ fn covering_node(ctx: &ParseCtx, start: usize, end: usize) -> Option<CssSyntaxNo
 /// specification reads an open one to its match, braces included, so it
 /// swallows everything after it; Biome ends the declaration at the next `;`
 /// instead, and the value would look harmless here when it is not.
+///
+/// Never for a string left open (see `is_open_string`), which no value takes.
 pub fn in_free_form_value(ctx: &ParseCtx, start: usize, end: usize) -> bool {
+    if is_open_string(ctx, start, end) {
+        return false;
+    }
     let Some(node) = covering_node(ctx, start, end) else {
         return false;
     };
@@ -1193,7 +1219,8 @@ pub struct Statement {
     pub kind: StatementKind,
     pub start: usize,
     /// End of its last token before the limit it was read to. A rule ends
-    /// before the first `;` in its selector, where the author ended it.
+    /// before the first `;` or `}` in its selector, where the author ended it
+    /// or the block it is in ends.
     pub end: usize,
     /// Start of the first token in it before the limit that the lexer could
     /// not read, such as a string with no closing quote.
@@ -1251,7 +1278,7 @@ fn statement(node: &CssSyntaxNode, limit: usize) -> Statement {
         .descendants_tokens(Direction::Next)
         .take_while(|t| {
             usize::from(t.text_trimmed_range().start()) < limit
-                && !(rule && t.kind() == CssSyntaxKind::SEMICOLON)
+                && !(rule && matches!(t.kind(), CssSyntaxKind::SEMICOLON | CssSyntaxKind::R_CURLY))
         })
         .filter(|t| t.kind() != CssSyntaxKind::CSS_SPACE_LITERAL)
         .last()

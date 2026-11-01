@@ -1544,6 +1544,8 @@ mod tests {
             ("gap: 1px;\r\n  color crimson", (2, 3)),
             ("color crimson; &:hover { gap: 1px }", (1, 1)),
             ("&:hover { color crimson; }", (1, 11)),
+            ("&:hover { color crimson }", (1, 11)),
+            ("@media print { color crimson }", (1, 16)),
         ] {
             assert_eq!(
                 only_error(body),
@@ -1669,6 +1671,28 @@ mod tests {
                 (3, 2, quote)
             ]
         );
+    }
+
+    // A custom property takes any run of tokens, a `:` included, but a string
+    // its line leaves open is a bad string to CSS Syntax, which none takes.
+    #[test]
+    fn a_string_left_open_in_a_custom_property_is_refused() {
+        let quote = "Missing closing quote";
+        assert_eq!(only_error("--x: \"abc"), row(1, 6, "\"abc", quote));
+        assert_eq!(
+            only_error("--x: a:b;\n--y: 'abc;\ngap: 1px;"),
+            row(2, 6, "'abc;", quote)
+        );
+
+        let v = validate(".a { --x: \"abc\n}", opts());
+        assert_eq!(v.errors.len(), 1, "{:?}", v.errors);
+        let e = &v.errors[0];
+        assert_eq!(
+            (e.line, e.column, e.text.as_str(), e.message.as_str()),
+            (1, 11, "\"abc", quote)
+        );
+
+        assert!(validate_block("--x: a:b; --y: \"a:b\";", opts()).valid);
     }
 
     #[test]
