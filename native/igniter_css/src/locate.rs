@@ -12,9 +12,9 @@
 //!   * more than one match is `MatchResult::Ambiguous` -- we error, we do not
 //!     pick one, because guessing produces surprising diffs.
 
-use crate::ctx::{is_bogus, ParseCtx};
+use crate::ctx::ParseCtx;
 use biome_css_syntax::{CssSyntaxKind, CssSyntaxNode, CssSyntaxToken};
-use biome_rowan::{Direction, TextRange, TextSize};
+use biome_rowan::{Direction, SyntaxKind, TextRange, TextSize};
 
 // ---------------------------------------------------------------------------
 // References
@@ -481,7 +481,8 @@ fn at_rule_ref_from(node: &CssSyntaxNode, ctx: &ParseCtx) -> Option<AtRuleRef> {
 /// `;` that ends it or the `}` that closes its block. A `}` closing the block
 /// the `@` sits in ends it first.
 ///
-/// `None` for an `@` with no name against it, or one that does not start a
+/// `None` for an `@` with no name against it -- an identifier or a keyword
+/// Biome lexes as one, not `;` or `(` -- or one that does not start a
 /// statement -- first in the file or after a `;`, `{` or `}`, comments aside --
 /// because after anything else it is part of a selector or a value
 /// (`url(@x.png)`), as every reader of CSS takes it.
@@ -498,7 +499,9 @@ fn stray_at_rule_ref(ctx: &ParseCtx, at: &CssSyntaxToken) -> Option<AtRuleRef> {
     let (start, at_end) = range_to_pair(at.text_trimmed_range());
     let name_token = at.next_token()?;
     let (name_start, name_end) = range_to_pair(name_token.text_trimmed_range());
-    if name_start != at_end || name_token.kind() == CssSyntaxKind::EOF {
+    let named =
+        name_token.kind() == CssSyntaxKind::IDENT || name_token.kind().is_contextual_keyword();
+    if name_start != at_end || !named {
         return None;
     }
 
@@ -902,7 +905,7 @@ pub fn top_of_file_anchor(ctx: &ParseCtx) -> usize {
     // that appear before the first rule.
     let first_rule_start = top_level_nodes(ctx)
         .iter()
-        .filter(|n| !is_bogus(n.kind()))
+        .filter(|n| !n.kind().is_bogus())
         .map(|n| usize::from(n.text_trimmed_range().start()))
         .find(|start| *start >= anchor);
 
@@ -1114,7 +1117,7 @@ pub fn is_stray_semicolon(ctx: &ParseCtx, start: usize, end: usize) -> bool {
                 | CssSyntaxKind::CSS_DECLARATION_OR_AT_RULE_LIST
         )
     });
-    is_bogus(node.kind())
+    node.kind().is_bogus()
         && in_block
         && node
             .descendants_tokens(Direction::Next)
@@ -1127,11 +1130,9 @@ pub fn is_stray_semicolon(ctx: &ParseCtx, start: usize, end: usize) -> bool {
 /// block the at-rule is in; Biome 0.5.8 reads on to the next `;` or `{`, and
 /// misreads everything up to there.
 ///
-/// Only for a prelude on one line with its brackets closed and no `:` with a
-/// space after it. One that runs onto a new line before the `}`, `@apply p-4`
-/// then `color: red`, or holds a `:` the way a declaration does, `@apply p-4
-/// gap: 1px`, holds what reads as another statement with its `;` missing, and
-/// stays an error. A class name such as `md:p-4` has no space after its `:`.
+/// Only for a `}` outside every bracket in the prelude: in `@apply foo(a }` it
+/// is part of the `(`'s block, and the at-rule runs on past it. What the
+/// prelude says, `@apply p-4 gap: 1px` included, is the at-rule's to check.
 pub fn at_rule_ended_by_its_block(ctx: &ParseCtx) -> Option<usize> {
     let prelude = ctx
         .syntax()
@@ -1149,19 +1150,8 @@ pub fn at_rule_ended_by_its_block(ctx: &ParseCtx) -> Option<usize> {
     let close = tokens
         .iter()
         .position(|t| t.kind() == CssSyntaxKind::R_CURLY)?;
-    let before = &tokens[..close];
-    let one_line = !before.is_empty() && !before.iter().any(|t| t.has_leading_newline());
-    let declaration = before.iter().any(|t| {
-        t.kind() == CssSyntaxKind::COLON
-            && t.trailing_trivia()
-                .pieces()
-                .any(|piece| piece.is_whitespace())
-    });
-    (one_line
-        && !declaration
-        && brackets_close(before)
-        && tokens[close].parent().as_ref() == Some(&prelude))
-    .then(|| usize::from(tokens[close].text_trimmed_range().start()))
+    (brackets_close(&tokens[..close]) && tokens[close].parent().as_ref() == Some(&prelude))
+        .then(|| usize::from(tokens[close].text_trimmed_range().start()))
 }
 
 /// At-rules that are valid only at the top level of a stylesheet, written

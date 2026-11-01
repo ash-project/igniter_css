@@ -425,22 +425,6 @@ pub fn is_comment_kind(kind: biome_rowan::TriviaPieceKind) -> bool {
     )
 }
 
-/// Kinds that represent a rule Biome could not understand. They still carry
-/// their original source text, which is exactly why we can patch around them.
-pub fn is_bogus(kind: CssSyntaxKind) -> bool {
-    matches!(
-        kind,
-        CssSyntaxKind::CSS_BOGUS
-            | CssSyntaxKind::CSS_BOGUS_RULE
-            | CssSyntaxKind::CSS_BOGUS_AT_RULE
-            | CssSyntaxKind::CSS_BOGUS_BLOCK
-            | CssSyntaxKind::CSS_BOGUS_DECLARATION_ITEM
-            | CssSyntaxKind::CSS_BOGUS_PROPERTY
-            | CssSyntaxKind::CSS_BOGUS_PROPERTY_VALUE
-            | CssSyntaxKind::CSS_BOGUS_SELECTOR
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

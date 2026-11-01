@@ -1611,6 +1611,21 @@ mod tests {
         );
     }
 
+    // An `@` with no name against it starts no at-rule, so nothing after it is
+    // listed as one, or removed with it. The texts are what was listed before.
+    #[test]
+    fn an_at_sign_with_no_name_is_not_an_at_rule() {
+        for (src, text) in [
+            (".a { @; color: red; }\n", "@; color: red;"),
+            (".a { @(x); color: red; }\n", "@(x);"),
+        ] {
+            let listed = crate::analyze::list_at_rules(src, ParseOptions::strict()).unwrap();
+            assert!(listed.is_empty(), "{src}: {listed:?}");
+            let out = remove_at_rules(src, &[text.to_string()], ParseOptions::strict()).unwrap();
+            assert_eq!(out.source, src);
+        }
+    }
+
     #[test]
     fn removing_at_rules_from_unbalanced_braces_is_refused() {
         let texts = vec!["@import \"x\";".to_string()];

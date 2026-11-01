@@ -18,7 +18,8 @@ use crate::locate::{
 use crate::ops::at_rule::normalize_target_needle;
 use crate::ops::query;
 use biome_css_syntax::{CssSyntaxKind, CssSyntaxNode};
-use biome_rowan::Direction;
+use biome_diagnostics::{display::SourceFile, SourceCode};
+use biome_rowan::{Direction, TextSize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A block of declarations together with the text that introduced it -- a
@@ -844,13 +845,17 @@ fn placed(text: &str, shift: usize, error: &ParseError) -> Diagnostic {
     }
 }
 
-/// 1-based line and column of byte `at` in `text`, the column in characters.
+/// 1-based line and column of byte `at` in `text`, the column in characters,
+/// as Biome counts them: a line ends at `\n`, `\r\n` or `\r`.
 fn line_and_column(text: &str, at: usize) -> (usize, usize) {
-    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
-    (
-        text[..at].matches('\n').count() + 1,
-        text[line_start..at].chars().count() + 1,
-    )
+    let file = SourceFile::new(SourceCode {
+        text,
+        line_starts: None,
+    });
+    TextSize::try_from(at)
+        .ok()
+        .and_then(|at| file.location(at).ok())
+        .map_or((1, 1), |l| (l.line_number.get(), l.column_number.get()))
 }
 
 /// `message` on one line: a line break in the author's text it quotes reads
@@ -1403,6 +1408,10 @@ mod tests {
         assert_eq!((first.line, first.column), (3, 13));
         assert_eq!(first.text, ": blue");
         assert!(v.message.contains("line 3, column 13"), "{}", v.message);
+
+        // A line ends at `\r` too, as Biome reads it.
+        let v = validate(".a {\r  color: red\r  background: blue;\r}\r", opts());
+        assert_eq!((v.errors[0].line, v.errors[0].column), (3, 13));
     }
 
     #[test]
@@ -1542,6 +1551,7 @@ mod tests {
             ("gap: 1px;\ncolor crimson", (2, 1)),
             ("gap: 1px;\ncolor crimson;\nmargin: 0;", (2, 1)),
             ("gap: 1px;\r\n  color crimson", (2, 3)),
+            ("gap: 1px;\r  color crimson", (2, 3)),
             ("color crimson; &:hover { gap: 1px }", (1, 1)),
             ("&:hover { color crimson; }", (1, 11)),
             ("&:hover { color crimson }", (1, 11)),
@@ -1613,6 +1623,11 @@ mod tests {
             ),
             (
                 "gap: 1px;\n&:hover {\n  &:focus { gap: 1px; }",
+                (3, 24),
+                "Expected a `}` to close the `{` on line 2, column 9",
+            ),
+            (
+                "gap: 1px;\r&:hover {\r  &:focus { gap: 1px; }",
                 (3, 24),
                 "Expected a `}` to close the `{` on line 2, column 9",
             ),
@@ -1727,6 +1742,11 @@ mod tests {
             ".a { @apply p-4 }\n.b { color: red; }",
             ".a { @apply p-4 } .b { &:hover { @apply p-2 } }",
             "@media print { .a { @apply p-4 } }",
+            ".a { @apply p-4\n  color: red }",
+            ".a { @apply p-4 gap: 1px }",
+            ".a { @foo (min-width: 1px) }",
+            ".a { @apply foo(a: b) }",
+            ".a { @apply }",
         ] {
             let v = validate(src, opts());
             assert!(v.valid, "{src}: {:?}", v.errors);
@@ -1739,6 +1759,8 @@ mod tests {
             "@apply p-4",
             "padding: 4px;\n@apply p-4",
             "&:hover { @apply p-4 }",
+            "@apply p-4\ncolor: red",
+            "@apply p-4 gap: 1px",
         ] {
             let v = validate_block(body, opts());
             assert!(v.valid, "{body:?}: {:?}", v.errors);
@@ -1772,25 +1794,15 @@ mod tests {
         );
     }
 
+    // A `}` inside a bracket is part of that bracket's block, and an at-rule
+    // Biome knows the grammar of, `@media`, still needs a block of its own.
     #[test]
-    fn an_at_rule_running_into_another_statement_is_still_an_error() {
-        for body in [
-            "@apply p-4\ncolor: red",
-            "@apply p-4 gap: 1px",
-            "@apply\np-4",
-        ] {
-            assert_eq!(
-                only_error(body).3,
-                "This `@apply` rule is not finished",
-                "{body:?}"
-            );
-        }
-        for src in [
-            ".a { @apply p-4\n  color: red }",
-            ".a { @apply }",
-            ".a { @apply foo(a }",
-            ".a { @media print }",
-        ] {
+    fn an_at_rule_its_block_does_not_end_is_still_an_error() {
+        assert_eq!(
+            only_error("@apply foo(a"),
+            row(1, 1, "@apply foo(a", "This `@apply` rule is not finished")
+        );
+        for src in [".a { @apply foo(a }", ".a { @media print }"] {
             assert!(!validate(src, opts()).valid, "{src}");
         }
     }

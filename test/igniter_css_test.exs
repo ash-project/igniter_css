@@ -720,11 +720,20 @@ defmodule IgniterCssTest do
       assert {:ok, %{valid: true}} = IgniterCss.validate(".a { @apply p-4 }\n.b { color: red; }")
     end
 
-    test "still refuses an @apply that runs into another statement without a `;`" do
-      assert {:error, %{errors: [%{line: 1, column: 1, text: "@apply p-4\ncolor: red"}]}} =
-               IgniterCss.validate_block("@apply p-4\ncolor: red")
+    test "reads an at-rule's prelude up to the } of its block, as CSS Syntax does" do
+      for body <- ["@apply p-4\ncolor: red", "@apply p-4 gap: 1px"] do
+        assert {:ok, %{valid: true}} = IgniterCss.validate_block(body), body
+      end
 
-      assert {:error, _} = IgniterCss.validate_block("@apply p-4 gap: 1px")
+      assert {:ok, %{valid: true}} = IgniterCss.validate(".a { @foo (min-width: 1px) }")
+
+      assert {:error, %{errors: [%{line: 1, column: 1, text: "@apply foo(a"}]}} =
+               IgniterCss.validate_block("@apply foo(a")
+    end
+
+    test "counts a line ended by \\r alone" do
+      assert {:error, %{errors: [%{line: 2, column: 1, text: "color crimson"}]}} =
+               IgniterCss.validate_block("gap: 1px;\rcolor crimson")
     end
 
     test "keeps a string's missing closing quote over what the parser misreads after it" do

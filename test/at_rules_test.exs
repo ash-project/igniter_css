@@ -614,6 +614,19 @@ defmodule IgniterCss.AtRulesTest do
       assert upper.name == "import"
     end
 
+    # Before, `@;` was listed as an at-rule named `;` that ran on to `color: red;`.
+    test "an @ with no name against it starts no at-rule, so nothing goes with it" do
+      for {css, text} <- [
+            {".a { @; color: red; }", "@; color: red;"},
+            {".a { @(x); color: red; }", "@(x);"}
+          ] do
+        assert {:ok, []} = IgniterCss.list_at_rules(css)
+
+        assert {:ok, %{changed: false, source: ^css}} =
+                 IgniterCss.remove_at_rules(css, [%IgniterCss.AtRule{text: text}])
+      end
+    end
+
     test "refuses to remove from braces that do not balance" do
       css = ~s|.a { @import "x.css";|
       {:ok, rules} = IgniterCss.list_at_rules(css)
